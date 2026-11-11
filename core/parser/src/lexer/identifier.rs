@@ -35,7 +35,12 @@ impl Identifier {
     /// [spec]: https://tc39.es/ecma262/#sec-names-and-keywords
     pub(super) fn is_identifier_start(ch: u32) -> bool {
         const ID_START: CodePointSetDataBorrowed<'static> = CodePointSetData::new::<IdStart>();
-        matches!(ch, 0x0024 /* $ */ | 0x005F /* _ */) || ID_START.contains32(ch)
+        // ASCII fast path: the ASCII members of `ID_Start` are exactly `A-Z` and `a-z`,
+        // so the Unicode set lookup (a binary search) is only needed above U+007F.
+        if ch < 0x80 {
+            return matches!(ch, 0x41..=0x5A | 0x61..=0x7A | 0x0024 /* $ */ | 0x005F /* _ */);
+        }
+        ID_START.contains32(ch)
     }
 
     /// Checks if a character is `IdentifierPart` as per ECMAScript standards.
@@ -47,10 +52,15 @@ impl Identifier {
     fn is_identifier_part(ch: u32) -> bool {
         const ID_CONTINUE: CodePointSetDataBorrowed<'static> =
             CodePointSetData::new::<IdContinue>();
-        matches!(
-            ch,
-            0x0024 /* $ */ | 0x005F /* _ */ | 0x200C /* <ZWNJ> */ | 0x200D /* <ZWJ> */
-        ) || ID_CONTINUE.contains32(ch)
+        // ASCII fast path: the ASCII members of `ID_Continue` are exactly `0-9`, `A-Z`,
+        // `a-z` and `_`.
+        if ch < 0x80 {
+            return matches!(
+                ch,
+                0x30..=0x39 | 0x41..=0x5A | 0x61..=0x7A | 0x0024 /* $ */ | 0x005F /* _ */
+            );
+        }
+        matches!(ch, 0x200C /* <ZWNJ> */ | 0x200D /* <ZWJ> */) || ID_CONTINUE.contains32(ch)
     }
 }
 
@@ -145,5 +155,32 @@ impl Identifier {
         }
 
         Ok((identifier_name, contains_escaped_chars))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Identifier;
+    use icu_properties::CodePointSetData;
+    use icu_properties::props::{IdContinue, IdStart};
+
+    /// The ASCII fast paths must agree with the Unicode sets they shortcut.
+    #[test]
+    fn ascii_fast_path_matches_unicode_sets() {
+        let start = CodePointSetData::new::<IdStart>();
+        let cont = CodePointSetData::new::<IdContinue>();
+        for ch in 0..0x80u32 {
+            let dollar_or_underscore = matches!(ch, 0x24 | 0x5F);
+            assert_eq!(
+                Identifier::is_identifier_start(ch),
+                dollar_or_underscore || start.contains32(ch),
+                "start U+{ch:04X}"
+            );
+            assert_eq!(
+                Identifier::is_identifier_part(ch),
+                dollar_or_underscore || cont.contains32(ch),
+                "part U+{ch:04X}"
+            );
+        }
     }
 }
