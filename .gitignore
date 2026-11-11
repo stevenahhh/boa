@@ -52,3 +52,4 @@ perf.data*
 # Nix
 /.envrc
 /.direnv
+/target-bench
