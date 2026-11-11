@@ -401,6 +401,50 @@ impl RegExp {
         })
     }
 
+    /// Creates the `RegExp` object of a regular expression literal.
+    ///
+    /// Evaluating a literal must create a new object every time, but the pattern and flags
+    /// of a literal never change, so the compiled matcher is cached per thread and cloned.
+    /// A failed compilation is not cached, so it reports the same error on every evaluation.
+    pub(crate) fn create_from_literal(
+        pattern: &JsString,
+        flags: &JsString,
+        context: &mut Context,
+    ) -> JsResult<JsObject> {
+        /// Upper bound on cached literals; the cache is emptied when it fills up.
+        const MAX_CACHED_LITERALS: usize = 1024;
+        thread_local! {
+            static LITERALS: std::cell::RefCell<rustc_hash::FxHashMap<(JsString, JsString), RegExp>> =
+                std::cell::RefCell::default();
+        }
+
+        let key = (pattern.clone(), flags.clone());
+        let cached = LITERALS.with(|cache| cache.borrow().get(&key).cloned());
+        let regexp = if let Some(regexp) = cached {
+            regexp
+        } else {
+            let regexp = Self::compile_native_regexp(
+                &pattern.clone().into(),
+                &flags.clone().into(),
+                context,
+            )?;
+            LITERALS.with(|cache| {
+                let mut cache = cache.borrow_mut();
+                if cache.len() >= MAX_CACHED_LITERALS {
+                    cache.clear();
+                }
+                cache.insert(key, regexp.clone());
+            });
+            regexp
+        };
+
+        Ok(context
+            .intrinsics()
+            .templates()
+            .regexp()
+            .create(regexp, vec![0.into()]))
+    }
+
     /// `RegExpInitialize ( obj, pattern, flags )`
     ///
     /// If prototype is `None`, initializes the prototype to `%RegExp%.prototype`.
