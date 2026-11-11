@@ -127,6 +127,10 @@ pub struct Context {
     optimizer_options: OptimizerOptions,
     root_shape: RootShape,
 
+    /// Compiled regular expression literals, by pattern and flags.
+    pub(crate) regexp_literals:
+        rustc_hash::FxHashMap<(JsString, JsString), builtins::regexp::RegExp>,
+
     /// Unique identifier for each parser instance used during the context lifetime.
     parser_identifier: u32,
 
@@ -1257,6 +1261,7 @@ impl ContextBuilder {
             job_executor,
             module_loader,
             optimizer_options: OptimizerOptions::OPTIMIZE_ALL,
+            regexp_literals: rustc_hash::FxHashMap::default(),
             root_shape,
             parser_identifier: 0,
             can_block: self.can_block,

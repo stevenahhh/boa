@@ -40,8 +40,9 @@ mod tests;
 // Safety: `RegExp` does not contain any objects which needs to be traced, so this is safe.
 #[boa_gc(unsafe_empty_trace)]
 pub struct RegExp {
-    /// Regex matcher.
-    matcher: Regex,
+    /// Regex matcher. Shared: a compiled program is immutable, and every object
+    /// created from the same literal uses the same one.
+    matcher: std::rc::Rc<Regex>,
     flags: RegExpFlags,
     original_source: JsString,
     original_flags: JsString,
@@ -394,7 +395,7 @@ impl RegExp {
         // 20. Set obj.[[RegExpRecord]] to rer.
         // 21. Set obj.[[RegExpMatcher]] to CompilePattern of parseResult with argument rer.
         Ok(RegExp {
-            matcher,
+            matcher: std::rc::Rc::new(matcher),
             flags,
             original_source: p,
             original_flags: f,
@@ -404,7 +405,7 @@ impl RegExp {
     /// Creates the `RegExp` object of a regular expression literal.
     ///
     /// Evaluating a literal must create a new object every time, but the pattern and flags
-    /// of a literal never change, so the compiled matcher is cached per thread and cloned.
+    /// of a literal never change, so the compiled matcher is cached in the context and shared.
     /// A failed compilation is not cached, so it reports the same error on every evaluation.
     pub(crate) fn create_from_literal(
         pattern: &JsString,
@@ -413,13 +414,8 @@ impl RegExp {
     ) -> JsResult<JsObject> {
         /// Upper bound on cached literals; the cache is emptied when it fills up.
         const MAX_CACHED_LITERALS: usize = 1024;
-        thread_local! {
-            static LITERALS: std::cell::RefCell<rustc_hash::FxHashMap<(JsString, JsString), RegExp>> =
-                std::cell::RefCell::default();
-        }
-
         let key = (pattern.clone(), flags.clone());
-        let cached = LITERALS.with(|cache| cache.borrow().get(&key).cloned());
+        let cached = context.regexp_literals.get(&key).cloned();
         let regexp = if let Some(regexp) = cached {
             regexp
         } else {
@@ -428,13 +424,10 @@ impl RegExp {
                 &flags.clone().into(),
                 context,
             )?;
-            LITERALS.with(|cache| {
-                let mut cache = cache.borrow_mut();
-                if cache.len() >= MAX_CACHED_LITERALS {
-                    cache.clear();
-                }
-                cache.insert(key, regexp.clone());
-            });
+            if context.regexp_literals.len() >= MAX_CACHED_LITERALS {
+                context.regexp_literals.clear();
+            }
+            context.regexp_literals.insert(key, regexp.clone());
             regexp
         };
 
