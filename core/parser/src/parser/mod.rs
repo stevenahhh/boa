@@ -583,6 +583,10 @@ trait OrAbrupt<T> {
 
 impl<T> OrAbrupt<T> for ParseResult<Option<T>> {
     fn or_abrupt(self) -> ParseResult<T> {
-        self?.ok_or(Error::AbruptEnd)
+        // Build the error only on the failure path: this runs for every successful peek.
+        match self? {
+            Some(value) => Ok(value),
+            None => Err(Error::AbruptEnd),
+        }
     }
 }
