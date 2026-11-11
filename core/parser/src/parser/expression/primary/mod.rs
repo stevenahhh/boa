@@ -480,9 +480,12 @@ where
                     "multiple expressions in parenthesized expression",
                 ));
             }
-            if let InnerExpression::Expression(expression) = &expressions[0] {
+            // Exactly one element is left, so it can be moved out of the list.
+            if matches!(expressions[0], InnerExpression::Expression(_))
+                && let Some(InnerExpression::Expression(expression)) = expressions.pop()
+            {
                 return Ok(ast::Expression::Parenthesized(Parenthesized::new(
-                    expression.clone(),
+                    expression,
                     Span::new(span_start.start(), span.end()),
                 ))
                 .into());
