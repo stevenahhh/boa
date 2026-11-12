@@ -285,3 +285,46 @@ fn eval_created_bindings_can_be_deleted_5333() {
         ),
     ]);
 }
+
+#[test]
+fn assignments_to_bindings_of_the_global_object() {
+    // Expected value from node: writable data properties are written, and a non-writable,
+    // accessor, deleted, inherited, shadowed or frozen binding takes the generic path.
+    run_test_actions([TestAction::assert_eq(
+        indoc! {r#"
+            var log = [];
+            var w = 0;
+            function put(v) { w = v; return w; }
+            log.push(put(1), put(2));
+            Object.defineProperty(globalThis, "w", { writable: false });
+            log.push(put(3));
+            log.push((function () { "use strict"; try { w = 4; } catch (e) { return e.constructor.name; } })());
+            var hits = 0;
+            Object.defineProperty(globalThis, "acc", { get() { return hits; }, set(v) { hits += v; }, configurable: true });
+            function putAcc(v) { acc = v; }
+            putAcc(2); putAcc(3); log.push(acc);
+            implicitW = 1;
+            function putImplicit(v) { implicitW = v; }
+            putImplicit(5); log.push(implicitW);
+            delete globalThis.implicitW;
+            log.push((function () { "use strict"; try { implicitW = 6; } catch (e) { return e.constructor.name; } })());
+            putImplicit(7); log.push(implicitW);
+            var protoHits = 0;
+            Object.defineProperty(Object.prototype, "viaProto", { set(v) { protoHits += v; }, configurable: true });
+            function putProto(v) { viaProto = v; }
+            putProto(4); putProto(5);
+            log.push(protoHits, Object.prototype.hasOwnProperty.call(globalThis, "viaProto"));
+            delete Object.prototype.viaProto;
+            var shadowed = "global";
+            function putWith(o) { with (o) { shadowed = "with"; } }
+            const o = { shadowed: "own" }; putWith(o);
+            log.push(o.shadowed, shadowed);
+            var frozenTarget = 1;
+            Object.freeze(globalThis);
+            function putFrozen(v) { frozenTarget = v; }
+            putFrozen(2); log.push(frozenTarget);
+            log.join(",")
+        "#},
+        js_str!("1,2,2,TypeError,5,5,ReferenceError,7,9,false,with,global,1"),
+    )]);
+}

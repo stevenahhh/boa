@@ -19,8 +19,13 @@ impl GetName {
         (value, index): (RegisterOperand, IndexOperand),
         context: &mut Context,
     ) -> JsResult<()> {
-        let mut binding_locator =
-            context.vm.frame().code_block.bindings[usize::from(index)].clone();
+        let binding_locator = &context.vm.frame().code_block.bindings[usize::from(index)];
+        if let Some(result) = context.static_declarative_binding_value(binding_locator) {
+            context.vm.set_register(value.into(), result);
+            return Ok(());
+        }
+
+        let mut binding_locator = binding_locator.clone();
         context.find_runtime_binding(&mut binding_locator)?;
         let result = context.get_binding(&binding_locator)?.ok_or_else(|| {
             let name = binding_locator.name().to_std_string_escaped();
@@ -50,6 +55,24 @@ impl GetNameGlobal {
         (dst, index, ic_index): (RegisterOperand, IndexOperand, IndexOperand),
         context: &mut Context,
     ) -> JsResult<()> {
+        // A cached data property of the global object, for a binding that no `with` environment
+        // or binding added by a direct `eval` can redirect, is read without cloning the binding
+        // locator or the global object. Any other case takes the steps below.
+        let frame = context.vm.frame();
+        let binding_locator = &frame.code_block.bindings[usize::from(index)];
+        if binding_locator.is_global() && context.is_static_binding(binding_locator) {
+            let ic = &frame.code_block.ic[usize::from(ic_index)];
+            let global = frame.realm.global_object().borrow();
+            if let Some((slot, result)) = ic.get(global.properties(), |properties, slot| {
+                properties.storage[slot.index as usize].clone()
+            }) && !slot.attributes.is_accessor_descriptor()
+            {
+                drop(global);
+                context.vm.set_register(dst.into(), result);
+                return Ok(());
+            }
+        }
+
         let mut binding_locator =
             context.vm.frame().code_block.bindings[usize::from(index)].clone();
         context.find_runtime_binding(&mut binding_locator)?;

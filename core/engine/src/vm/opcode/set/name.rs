@@ -1,8 +1,12 @@
+use std::ptr::fn_addr_eq;
+
 use boa_ast::scope::{BindingLocator, BindingLocatorScope};
 
 use crate::{
-    Context, JsError, JsExpect, JsNativeError, JsResult,
+    Context, JsError, JsExpect, JsNativeError, JsResult, JsValue,
     environments::Environment,
+    object::{internal_methods::ORDINARY_INTERNAL_METHODS, shape::slot::SlotAttributes},
+    property::PropertyKey,
     vm::opcode::{IndexOperand, Operation, RegisterOperand},
 };
 
@@ -52,10 +56,18 @@ impl SetName {
     ) -> JsResult<()> {
         let value = context.vm.get_register(value.into()).clone();
         let code_block = context.vm.frame().code_block();
+        if context.set_static_declarative_binding(&code_block.bindings[usize::from(index)], &value)
+        {
+            return Ok(());
+        }
         let mut binding_locator = code_block.bindings[usize::from(index)].clone();
         let strict = code_block.strict();
 
         context.find_runtime_binding(&mut binding_locator)?;
+
+        if set_global_object_data_property(&binding_locator, &value, context) {
+            return Ok(());
+        }
 
         verify_initialized(&binding_locator, context)?;
 
@@ -93,6 +105,10 @@ impl SetNameByLocator {
             context.find_runtime_binding(&mut binding_locator)?;
         }
 
+        if set_global_object_data_property(&binding_locator, &value, context) {
+            return Ok(());
+        }
+
         verify_initialized(&binding_locator, context)?;
 
         context.set_binding(&binding_locator, value.clone(), strict)?;
@@ -105,6 +121,54 @@ impl Operation for SetNameByLocator {
     const NAME: &'static str = "SetNameByLocator";
     const INSTRUCTION: &'static str = "INST - SetNameByLocator";
     const COST: u8 = 4;
+}
+
+/// Assigns `value` to a binding of the global object that is an own writable data property of it,
+/// when the global object has the ordinary internal methods.
+///
+/// That is what `verify_initialized` and `set_binding` do for such a binding: `[[HasProperty]]`
+/// finds the own property, and `OrdinarySet` writes the value of an own writable data property
+/// of its receiver, without calling anything. Returns `false`, having done nothing, when the
+/// binding is not one: then the caller takes the generic path.
+fn set_global_object_data_property(
+    locator: &BindingLocator,
+    value: &JsValue,
+    context: &Context,
+) -> bool {
+    if locator.scope() != BindingLocatorScope::GlobalObject {
+        return false;
+    }
+    let global = context.vm.frame().realm.global_object();
+    let vtable = global.vtable();
+    if !(fn_addr_eq(
+        vtable.__has_property__,
+        ORDINARY_INTERNAL_METHODS.__has_property__,
+    ) && fn_addr_eq(vtable.__set__, ORDINARY_INTERNAL_METHODS.__set__)
+        && fn_addr_eq(
+            vtable.__get_own_property__,
+            ORDINARY_INTERNAL_METHODS.__get_own_property__,
+        )
+        && fn_addr_eq(
+            vtable.__define_own_property__,
+            ORDINARY_INTERNAL_METHODS.__define_own_property__,
+        ))
+    {
+        return false;
+    }
+    // A binding name is an identifier, which is never an array index.
+    let key = PropertyKey::String(locator.name().clone());
+    let mut global = global.borrow_mut();
+    let properties = global.properties_mut();
+    let Some(slot) = properties.shape.lookup(&key) else {
+        return false;
+    };
+    if slot.attributes.is_accessor_descriptor()
+        || !slot.attributes.contains(SlotAttributes::WRITABLE)
+    {
+        return false;
+    }
+    properties.storage[slot.index as usize] = value.clone();
+    true
 }
 
 /// Checks that the binding pointed by `locator` exists and is initialized.

@@ -462,16 +462,10 @@ impl Context {
     /// are completely removed of runtime checks because the specification guarantees that runtime
     /// semantics cannot add or remove lexical bindings.
     pub(crate) fn find_runtime_binding(&mut self, locator: &mut BindingLocator) -> JsResult<()> {
-        let deleted_binding = self.is_deleted_binding(locator);
-
-        let global = self.vm.frame().realm.environment();
-        if let Some(env) = self.vm.frame().environments.current_declarative_ref(global)
-            && !env.with()
-            && !env.poisoned()
-            && !deleted_binding
-        {
+        if self.is_static_binding(locator) {
             return Ok(());
         }
+        let deleted_binding = self.is_deleted_binding(locator);
 
         let (global, min_index) = match locator.scope() {
             BindingLocatorScope::GlobalObject | BindingLocatorScope::GlobalDeclarative => (true, 0),
@@ -543,6 +537,71 @@ impl Context {
         }
 
         Ok(())
+    }
+
+    /// Returns `true` if [`Context::find_runtime_binding`] leaves `locator` as it was compiled:
+    /// no `with` environment, binding added by a direct `eval` or deleted binding can redirect it.
+    pub(crate) fn is_static_binding(&self, locator: &BindingLocator) -> bool {
+        let global = self.vm.frame().realm.environment();
+        self.vm
+            .frame()
+            .environments
+            .current_declarative_ref(global)
+            .is_some_and(|env| !env.with() && !env.poisoned())
+            && !self.is_deleted_binding(locator)
+    }
+
+    /// Returns the value of the binding `locator` points to if it is a static binding of a
+    /// declarative environment and is initialized, which is what [`Context::find_runtime_binding`]
+    /// followed by [`Context::get_binding`] returns for it. Otherwise returns `None`, and the
+    /// caller takes those generic steps.
+    pub(crate) fn static_declarative_binding_value(
+        &self,
+        locator: &BindingLocator,
+    ) -> Option<JsValue> {
+        if !self.is_static_binding(locator) {
+            return None;
+        }
+        match locator.scope() {
+            BindingLocatorScope::GlobalObject => None,
+            BindingLocatorScope::GlobalDeclarative => self
+                .vm
+                .frame()
+                .realm
+                .environment()
+                .get(locator.binding_index()),
+            BindingLocatorScope::Stack(index) => match self.environment_expect(index) {
+                Environment::Declarative(env) => env.get(locator.binding_index()),
+                Environment::Object(_) => None,
+            },
+        }
+    }
+
+    /// Sets the binding `locator` points to to `value` if it is a static, initialized binding of
+    /// a declarative environment, which is what [`Context::find_runtime_binding`], the
+    /// initialization check and [`Context::set_binding`] do for it, and returns `true`.
+    /// Otherwise returns `false` without doing anything.
+    pub(crate) fn set_static_declarative_binding(
+        &self,
+        locator: &BindingLocator,
+        value: &JsValue,
+    ) -> bool {
+        if !self.is_static_binding(locator) {
+            return false;
+        }
+        let env = match locator.scope() {
+            BindingLocatorScope::GlobalObject => return false,
+            BindingLocatorScope::GlobalDeclarative => self.vm.frame().realm.environment(),
+            BindingLocatorScope::Stack(index) => match self.environment_expect(index) {
+                Environment::Declarative(env) => env,
+                Environment::Object(_) => return false,
+            },
+        };
+        if env.get(locator.binding_index()).is_none() {
+            return false;
+        }
+        env.set(locator.binding_index(), value.clone());
+        true
     }
 
     /// Finds the object environment that contains the binding and returns the `this` value of the object environment.
