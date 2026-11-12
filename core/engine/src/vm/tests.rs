@@ -414,6 +414,86 @@ fn stack_size_limit_throws_a_catchable_range_error() {
 }
 
 #[test]
+fn caught_stack_overflow_leaves_room_for_the_next_one() {
+    run_test_actions([
+        TestAction::inspect_context(|context| {
+            context.runtime_limits_mut().set_recursion_limit(100_000);
+            context.runtime_limits_mut().set_stack_size_limit(4096);
+        }),
+        TestAction::assert_eq(
+            indoc! {r#"
+                let depth = 0;
+                function cnt(a, b, c) { let x = a, y = b, z = c; depth++; cnt(x, y, z); }
+                function overflow() {
+                    depth = 0;
+                    try { cnt(1, 2, 3); } catch (e) { return e instanceof RangeError ? depth : -1; }
+                }
+                const depths = [];
+                for (let i = 0; i < 8; i++) { depths.push(overflow()); }
+                let nested = -1;
+                try { cnt(1, 2, 3); } catch (e) { nested = overflow(); }
+                [depths[0] > 100, depths.every((d) => d === depths[0]), nested === depths[0]].join()
+            "#},
+            js_str!("true,true,true"),
+        ),
+    ]);
+}
+
+#[test]
+fn stack_overflow_returned_to_the_host_leaves_its_stack_as_it_was() {
+    let context = &mut Context::default();
+    context.runtime_limits_mut().set_recursion_limit(100_000);
+    context.runtime_limits_mut().set_stack_size_limit(1024);
+    // The overflow unwinds the frames of g before it reaches the frame of f, the one the call
+    // from the host runs.
+    let f = context
+        .eval(Source::from_bytes(
+            "function f() { return g(0); } function g(n) { let m = n + 1; return g(m); } f",
+        ))
+        .expect("script must run");
+    let f = f.as_callable().expect("f must be callable").clone();
+    let stack_len = context.vm.stack.stack.len();
+    for _ in 0..4 {
+        let error = f
+            .call(&JsValue::undefined(), &[], context)
+            .expect_err("the recursion must overflow");
+        assert!(
+            error
+                .as_native()
+                .is_some_and(|e| matches!(e.kind(), JsNativeErrorKind::Range))
+        );
+        assert_eq!(context.vm.stack.stack.len(), stack_len);
+    }
+}
+
+#[test]
+fn stack_overflow_caught_again_and_again_on_a_small_thread() {
+    // render runs scripts on a thread with std's default stack of 2 MiB, with these limits.
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let context = &mut Context::default();
+            context.runtime_limits_mut().set_recursion_limit(10_000);
+            context.runtime_limits_mut().set_stack_size_limit(1_000_000);
+            let result = context.eval(Source::from_bytes(indoc! {r#"
+                function viaMap() { return [0].map(viaMap)[0]; }
+                function plain(n) { return plain(n + 1) + 1; }
+                const names = [];
+                for (let i = 0; i < 20; i++) {
+                    try { viaMap(); } catch (e) {
+                        try { plain(0); } catch (e2) { names.push(e.name + e2.name); }
+                    }
+                }
+                names.length + " " + names.every((n) => n === "RangeErrorRangeError")
+            "#}));
+            assert_eq!(result, Ok(js_str!("20 true").into()));
+        })
+        .expect("spawn a thread")
+        .join()
+        .expect("the thread must not panic");
+}
+
+#[test]
 fn stack_overflow_through_native_code_throws_a_catchable_range_error() {
     run_test_actions([
         TestAction::inspect_context(|context| {

@@ -655,6 +655,11 @@ impl Vm {
 
         let catch_address = handler.handler();
         let environment_sp = frame.env_fp + handler.environment_count;
+        // The handler starts with nothing on the stack above the registers of its frame. A throw
+        // leaves there the values of the calls it unwound and the operands of calls of this
+        // frame that did not finish, and for a caught stack overflow that is as much as the
+        // stack size limit allows, so the next call would overflow again.
+        let registers_end = frame.rp as usize + frame.code_block.register_count as usize;
 
         // Go to handler location.
         frame.pc = u32::from(catch_address);
@@ -662,6 +667,7 @@ impl Vm {
         self.frame_mut()
             .environments
             .truncate(environment_sp as usize);
+        self.stack.stack.truncate(registers_end);
 
         true
     }
@@ -933,6 +939,10 @@ impl Context {
             }
 
             if exit_early {
+                // As a return from it does, take this frame and those it called off the stack:
+                // the caller of the run only pops the frame.
+                let frame = self.vm.frames.last().expect("frame must exist");
+                self.vm.stack.truncate_to_frame(frame);
                 return ControlFlow::Break(CompletionRecord::Throw(
                     self.vm
                         .pending_exception
