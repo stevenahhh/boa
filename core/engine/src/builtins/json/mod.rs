@@ -51,6 +51,7 @@ const fn to_hex_digit(val: u16) -> u16 {
 }
 
 mod direct;
+mod direct_stringify;
 #[cfg(test)]
 mod tests;
 
@@ -761,6 +762,7 @@ impl Json {
             gap,
             property_list,
             stack_floor: context.native_stack_floor(),
+            direct: direct_stringify::DirectState::new(),
         };
 
         // 12. Return ? SerializeJSONProperty(state, the empty String, wrapper).
@@ -787,6 +789,17 @@ impl Json {
 
         // 1. Let value be ? Get(holder, key).
         let mut value = holder.get(key.clone(), context)?;
+
+        // Without a replacer function, a property list or a gap, plain objects and arrays are
+        // written directly; see `direct_stringify`.
+        if state.replacer_function.is_none()
+            && state.property_list.is_none()
+            && state.gap.is_empty()
+            && let Some(obj) = value.as_object()
+            && let Some(kind) = direct_stringify::kind(&obj, state)
+        {
+            return direct_stringify::serialize(state, &obj, kind, context).map(Some);
+        }
 
         // 2. If Type(value) is Object or BigInt, then
         if value.is_object() || value.is_bigint() {
@@ -903,9 +916,15 @@ impl Json {
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-quotejsonstring
     fn quote_json_string(value: &JsString) -> JsString {
+        let mut product = Vec::with_capacity(value.len() + 2);
+        Self::quote_json_string_into(value, &mut product);
+        js_string!(&product[..])
+    }
+
+    /// Appends `QuoteJSONString(value)` to `product`.
+    fn quote_json_string_into(value: &JsString, product: &mut Vec<u16>) {
         let mut buf = [0; 2];
         // 1. Let product be the String value consisting solely of the code unit 0x0022 (QUOTATION MARK).
-        let mut product = Vec::with_capacity(value.len() + 2);
         product.push('"' as u16);
 
         // 2. For each code point C of ! StringToCodePoints(value), do
@@ -959,10 +978,8 @@ impl Json {
         }
 
         // 3. Set product to the string-concatenation of product and the code unit 0x0022 (QUOTATION MARK).
-        product.push('"' as u16);
-
         // 4. Return product.
-        js_string!(&product[..])
+        product.push('"' as u16);
     }
 
     /// `25.5.2.4 SerializeJSONObject ( state, value )`
@@ -1261,4 +1278,5 @@ struct StateRecord {
     /// Serializing recurses once per level of nesting in the value; see
     /// [`Context::native_stack_floor`].
     stack_floor: usize,
+    direct: direct_stringify::DirectState,
 }

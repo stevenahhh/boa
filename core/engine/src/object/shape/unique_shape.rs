@@ -232,6 +232,19 @@ impl UniqueShape {
         Self::new(prototype, property_table)
     }
 
+    /// Calls `f` with the key and slot of the property created `index`-th, if there is one.
+    pub(crate) fn with_entry<R>(
+        &self,
+        index: usize,
+        f: impl FnOnce(&PropertyKey, Slot) -> R,
+    ) -> Option<R> {
+        let property_table = self.property_table().borrow();
+        property_table
+            .keys
+            .get(index)
+            .map(|(key, slot)| f(key, *slot))
+    }
+
     /// Gets all keys first strings then symbols in creation order.
     pub(crate) fn keys(&self) -> Vec<PropertyKey> {
         self.property_table().borrow().keys()

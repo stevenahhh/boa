@@ -493,3 +493,133 @@ fn json_parse_without_a_reviver_takes_any_depth() {
         ),
     ]);
 }
+
+#[test]
+fn json_stringify_getter_deletes_later_key() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var o = { a: 1, get b() { delete o.c; return 2; }, c: 3, d: 4 }; return JSON.stringify(o); })()"#,
+        js_string!(r#"{"a":1,"b":2,"d":4}"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_getter_adds_and_changes() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var o = { a: 1, get b() { o.z = 9; o.c = "c2"; return 2; }, c: 3 }; return JSON.stringify(o); })()"#,
+        js_string!(r#"{"a":1,"b":2,"c":"c2"}"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_to_json_mutates_parent() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var o = { a: { toJSON() { o.b = "mut"; delete o.c; o.d = 1; return "A"; } }, b: 1, c: 2 }; return JSON.stringify(o); })()"#,
+        js_string!(r#"{"a":"A","b":"mut"}"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_to_json_mutates_grandparent() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var o = { x: [{ toJSON() { o.y = "late"; delete o.z; return 1; } }], y: 1, z: 2, w: 3 }; return JSON.stringify(o); })()"#,
+        js_string!(r#"{"x":[1],"y":"late","w":3}"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_to_json_grows_and_shrinks_array() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var a = [{ toJSON() { a.push(9); a[2] = "m"; return 0; } }, 1, 2]; var b = [{ toJSON() { b.length = 1; return 0; } }, 1, 2]; return JSON.stringify([a, b]); })()"#,
+        js_string!(r#"[[0,1,"m"],[0,null,null]]"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_to_json_added_to_object_prototype_midway() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var o = { a: { toJSON() { Object.prototype.toJSON = function () { return "P"; }; return 1; } }, b: { c: 1 }, d: [1] }; try { return JSON.stringify(o); } finally { delete Object.prototype.toJSON; } })()"#,
+        js_string!(r#"{"a":1,"b":"P","d":"P"}"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_to_json_getter_on_prototype() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var n = 0; Object.defineProperty(Object.prototype, "toJSON", { configurable: true, get() { n++; return undefined; } }); try { return JSON.stringify({ a: { b: 1 }, c: [2] }) + n; } finally { delete Object.prototype.toJSON; } })()"#,
+        js_string!(r#"{"a":{"b":1},"c":[2]}3"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_to_json_inherited_deep() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var p = { toJSON() { return "p"; } }; var o = Object.create(Object.create(p)); o.a = 1; return JSON.stringify({ o: o, q: [Object.create(p)] }); })()"#,
+        js_string!(r#"{"o":"p","q":["p"]}"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_array_subclass_and_own_to_json() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { class A extends Array { toJSON() { return "sub"; } } var a = new A(); a.push(1); var b = [1]; b.toJSON = () => "own"; class B extends Array {} var c = new B(); c.push(2, 3); return JSON.stringify([a, b, c]); })()"#,
+        js_string!(r#"["sub","own",[2,3]]"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_holes_read_through_prototype() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { Array.prototype[1] = "p1"; try { return JSON.stringify([[0, , 2], new Array(3), { a: [, 1] }]); } finally { delete Array.prototype[1]; } })()"#,
+        js_string!(r#"[[0,"p1",2],[null,"p1",null],{"a":[null,1]}]"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_proxy_values_and_prototypes() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var log = []; var p = new Proxy({ a: 1 }, { get(t, k) { log.push(String(k)); return t[k]; } }); var o = Object.create(new Proxy({}, { get(t, k) { log.push("proto:" + String(k)); } })); o.b = 2; return JSON.stringify([p, o]) + log.join(","); })()"#,
+        js_string!(r#"[{"a":1},{"b":2}]toJSON,a,proto:toJSON"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_integer_keys_order() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var o = { b: 1, 2: 2, a: 3, 1: 4, "-1": 5, "01": 6 }; var s = {}; s[10] = "x"; s.k = 1; s[3] = "y"; return JSON.stringify([o, s]); })()"#,
+        js_string!(r#"[{"1":4,"2":2,"b":1,"a":3,"-1":5,"01":6},{"3":"y","10":"x","k":1}]"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_accessors_and_non_enumerable() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var o = { a: 1 }; Object.defineProperty(o, "h", { value: 2, enumerable: false }); Object.defineProperty(o, "g", { get() { return [3]; }, enumerable: true }); o[Symbol("s")] = 4; o.z = undefined; o.f = function () {}; return JSON.stringify(o); })()"#,
+        js_string!(r#"{"a":1,"g":[3]}"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_wrappers_and_bigint_to_json() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { BigInt.prototype.toJSON = function () { return "n" + this; }; try { return JSON.stringify({ a: [new Number(1), new String("s"), new Boolean(true), 2n], d: new Date(0) }); } finally { delete BigInt.prototype.toJSON; } })()"#,
+        js_string!(r#"{"a":[1,"s",true,"n2"],"d":"1970-01-01T00:00:00.000Z"}"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_frozen_and_null_prototype() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var n = Object.create(null); n.x = [1]; return JSON.stringify([Object.freeze({ a: [1, Object.freeze([2])] }), n]); })()"#,
+        js_string!(r#"[{"a":[1,[2]]},{"x":[1]}]"#),
+    )]);
+}
+
+#[test]
+fn json_stringify_numbers_and_strings() {
+    run_test_actions([TestAction::assert_eq(
+        r#"JSON.stringify([0, -0, 1.5, 1e21, 1e-7, -2147483648, 2147483648, NaN, -Infinity, "a\"b\\c\n\u0001\u2028\ud800\udc00\udc00\u00e9\u4e2d"])"#,
+        js_string!(
+            r#"[0,0,1.5,1e+21,1e-7,-2147483648,2147483648,null,null,"a\"b\\c\n\u0001 𐀀\udc00é中"]"#
+        ),
+    )]);
+}

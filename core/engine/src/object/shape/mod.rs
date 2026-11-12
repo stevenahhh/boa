@@ -193,6 +193,20 @@ impl Shape {
         }
     }
 
+    /// Calls `f` with the key and slot of the property created `index`-th (counting symbols), if
+    /// there is one.
+    #[inline]
+    pub(crate) fn with_entry<R>(
+        &self,
+        index: usize,
+        f: impl FnOnce(&PropertyKey, Slot) -> R,
+    ) -> Option<R> {
+        match &self.inner {
+            Inner::Shared(shape) => shape.with_entry(index, f),
+            Inner::Unique(shape) => shape.with_entry(index, f),
+        }
+    }
+
     /// Returns the keys of the [`Shape`], in insertion order.
     #[inline]
     #[must_use]
