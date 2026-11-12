@@ -33,7 +33,7 @@ use crate::{
     object::{IntegrityLevel, JsObject, internal_methods::InternalMethodPropertyContext},
     property::{Attribute, PropertyNameKind},
     realm::Realm,
-    string::{CodePoint, StaticJsStrings},
+    string::{JsStrVariant, StaticJsStrings},
     symbol::JsSymbol,
     value::IntegerOrInfinity,
     vm::{CallFrame, CallFrameFlags, check_native_stack, source_info::SourcePath},
@@ -922,64 +922,89 @@ impl Json {
     }
 
     /// Appends `QuoteJSONString(value)` to `product`.
+    ///
+    /// Runs of code units that need no escape are copied as they are; Latin1 strings have no
+    /// surrogates, so only the escaped characters of Table 73 and the controls are looked at.
     fn quote_json_string_into(value: &JsString, product: &mut Vec<u16>) {
-        let mut buf = [0; 2];
         // 1. Let product be the String value consisting solely of the code unit 0x0022 (QUOTATION MARK).
         product.push('"' as u16);
 
         // 2. For each code point C of ! StringToCodePoints(value), do
-        for code_point in value.code_points() {
-            match code_point {
-                // a. If C is listed in the "Code Point" column of Table 73, then
-                // i. Set product to the string-concatenation of product and the
-                // escape sequence for C as specified in the "Escape Sequence"
-                // column of the corresponding row.
-                CodePoint::Unicode('\u{0008}') => product.extend_from_slice(utf16!(r"\b")),
-                CodePoint::Unicode('\u{0009}') => product.extend_from_slice(utf16!(r"\t")),
-                CodePoint::Unicode('\u{000A}') => product.extend_from_slice(utf16!(r"\n")),
-                CodePoint::Unicode('\u{000C}') => product.extend_from_slice(utf16!(r"\f")),
-                CodePoint::Unicode('\u{000D}') => product.extend_from_slice(utf16!(r"\r")),
-                CodePoint::Unicode('\u{0022}') => product.extend_from_slice(utf16!(r#"\""#)),
-                CodePoint::Unicode('\u{005C}') => product.extend_from_slice(utf16!(r"\\")),
-                // b. Else if C has a numeric value less than 0x0020 (SPACE), or
-                // if C has the same numeric value as a leading surrogate or
-                // trailing surrogate, then
-                //     i. Let unit be the code unit whose numeric value is that
-                //     of C.
-                //     ii. Set product to the string-concatenation of product
-                //     and UnicodeEscape(unit).
-                CodePoint::Unicode(c) if c < '\u{0020}' => {
-                    let val = c as u16;
-                    product.extend_from_slice(&[
-                        '\\' as u16,
-                        'u' as u16,
-                        to_hex_digit(val >> 12),
-                        to_hex_digit((val >> 8) & 0xF),
-                        to_hex_digit((val >> 4) & 0xF),
-                        to_hex_digit(val & 0xF),
-                    ]);
+        match value.as_str().variant() {
+            JsStrVariant::Latin1(bytes) => {
+                let mut run = 0;
+                for (index, &byte) in bytes.iter().enumerate() {
+                    if byte >= 0x20 && byte != b'"' && byte != b'\\' {
+                        continue;
+                    }
+                    product.extend(bytes[run..index].iter().map(|&byte| u16::from(byte)));
+                    Self::push_json_escape(u16::from(byte), product);
+                    run = index + 1;
                 }
-                CodePoint::UnpairedSurrogate(surr) => {
-                    product.extend_from_slice(&[
-                        '\\' as u16,
-                        'u' as u16,
-                        to_hex_digit(surr >> 12),
-                        to_hex_digit((surr >> 8) & 0xF),
-                        to_hex_digit((surr >> 4) & 0xF),
-                        to_hex_digit(surr & 0xF),
-                    ]);
+                product.extend(bytes[run..].iter().map(|&byte| u16::from(byte)));
+            }
+            JsStrVariant::Utf16(units) => {
+                let mut run = 0;
+                let mut index = 0;
+                while let Some(&unit) = units.get(index) {
+                    let is_surrogate = (0xD800..=0xDFFF).contains(&unit);
+                    if unit >= 0x20 && unit != 0x22 && unit != 0x5C && !is_surrogate {
+                        index += 1;
+                        continue;
+                    }
+                    if (0xD800..=0xDBFF).contains(&unit)
+                        && units
+                            .get(index + 1)
+                            .is_some_and(|low| (0xDC00..=0xDFFF).contains(low))
+                    {
+                        index += 2;
+                        continue;
+                    }
+                    product.extend_from_slice(&units[run..index]);
+                    Self::push_json_escape(unit, product);
+                    index += 1;
+                    run = index;
                 }
-                // c. Else,
-                CodePoint::Unicode(c) => {
-                    // i. Set product to the string-concatenation of product and ! UTF16EncodeCodePoint(C).
-                    product.extend_from_slice(c.encode_utf16(&mut buf));
-                }
+                product.extend_from_slice(&units[run..]);
             }
         }
 
         // 3. Set product to the string-concatenation of product and the code unit 0x0022 (QUOTATION MARK).
         // 4. Return product.
         product.push('"' as u16);
+    }
+
+    /// Appends the escape of `unit`, a code unit of Table 73, a control below 0x0020 or a surrogate
+    /// that is not half of a pair.
+    fn push_json_escape(unit: u16, product: &mut Vec<u16>) {
+        match unit {
+            // a. If C is listed in the "Code Point" column of Table 73, then
+            // i. Set product to the string-concatenation of product and the
+            // escape sequence for C as specified in the "Escape Sequence"
+            // column of the corresponding row.
+            0x08 => product.extend_from_slice(utf16!(r"\b")),
+            0x09 => product.extend_from_slice(utf16!(r"\t")),
+            0x0A => product.extend_from_slice(utf16!(r"\n")),
+            0x0C => product.extend_from_slice(utf16!(r"\f")),
+            0x0D => product.extend_from_slice(utf16!(r"\r")),
+            0x22 => product.extend_from_slice(utf16!(r#"\""#)),
+            0x5C => product.extend_from_slice(utf16!(r"\\")),
+            // b. Else if C has a numeric value less than 0x0020 (SPACE), or
+            // if C has the same numeric value as a leading surrogate or
+            // trailing surrogate, then
+            //     i. Let unit be the code unit whose numeric value is that
+            //     of C.
+            //     ii. Set product to the string-concatenation of product
+            //     and UnicodeEscape(unit).
+            _ => product.extend_from_slice(&[
+                '\\' as u16,
+                'u' as u16,
+                to_hex_digit(unit >> 12),
+                to_hex_digit((unit >> 8) & 0xF),
+                to_hex_digit((unit >> 4) & 0xF),
+                to_hex_digit(unit & 0xF),
+            ]),
+        }
     }
 
     /// `25.5.2.4 SerializeJSONObject ( state, value )`

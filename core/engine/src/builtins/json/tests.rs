@@ -623,3 +623,13 @@ fn json_stringify_numbers_and_strings() {
         ),
     )]);
 }
+
+#[test]
+fn json_stringify_quotes_surrogates_and_controls() {
+    run_test_actions([TestAction::assert_eq(
+        r#"JSON.stringify(["\udc00\ud800", "\ud800\ud800\udc00x", "a\udbff", "\u00ff\u0000\u001f\u007f", "\u4e2d\"\\\b\f\n\r\t/"])"#,
+        js_string!(
+            "[\"\\udc00\\ud800\",\"\\ud800𐀀x\",\"a\\udbff\",\"ÿ\\u0000\\u001f\u{7f}\",\"中\\\"\\\\\\b\\f\\n\\r\\t/\"]"
+        ),
+    )]);
+}
