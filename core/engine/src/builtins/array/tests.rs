@@ -1077,3 +1077,59 @@ fn index_assignment_past_the_end_follows_ordinary_set() {
         ),
     ]);
 }
+
+#[test]
+fn index_assignment_through_super_defines_the_property_on_the_receiver() {
+    run_test_actions([
+        TestAction::assert_eq(
+            indoc! {r#"
+                const arr1 = [1, 2, 3];
+                const obj1 = { __proto__: arr1, m() { super[0] = 99; return this; } };
+                obj1.m();
+                `${arr1[0]} ${Object.hasOwn(obj1, 0)} ${obj1[0]}`
+            "#},
+            js_str!("1 true 99"),
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                const arr2 = [1, 2, 3];
+                const obj2 = { __proto__: arr2, m() { super[0] += 10; super[1]++; return this; } };
+                obj2.m();
+                `${arr2.join()} ${obj2[0]} ${obj2[1]} ${Object.keys(obj2).join()}`
+            "#},
+            js_str!("1,2,3 11 3 0,1,m"),
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                const arr4 = [1, 2, 3];
+                const obj4 = Object.preventExtensions({ __proto__: arr4, m() { "use strict"; super[0] = 99; } });
+                let thrown4 = "none";
+                try { obj4.m(); } catch (e) { thrown4 = e.name; }
+                `${thrown4} ${arr4[0]} ${Object.hasOwn(obj4, 0)}`
+            "#},
+            js_str!("TypeError 1 false"),
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                const arr5 = [1, 2, 3];
+                const obj5 = { __proto__: arr5, m() { super[0] = 99; } };
+                Object.defineProperty(obj5, 0, { value: 5, writable: false });
+                obj5.m();
+                `${arr5[0]} ${obj5[0]}`
+            "#},
+            js_str!("1 5"),
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                Array.prototype[0] = "proto";
+                class Sub extends Array { m() { super[0] = "own"; return this; } }
+                const sub = new Sub();
+                sub.m();
+                const seen = `${Array.prototype[0]} ${Object.hasOwn(sub, 0)} ${sub[0]} ${sub.length}`;
+                delete Array.prototype[0];
+                seen
+            "#},
+            js_str!("proto true own 1"),
+        ),
+    ]);
+}

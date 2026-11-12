@@ -154,6 +154,7 @@ impl SetPropertyByValue {
         ),
         context: &mut Context,
     ) -> JsResult<()> {
+        let same_register = u32::from(receiver) == u32::from(object);
         let value = context.vm.get_register(value.into()).clone();
         let key = context.vm.get_register(key.into()).clone();
         let receiver = context.vm.get_register(receiver.into()).clone();
@@ -163,9 +164,20 @@ impl SetPropertyByValue {
         let key = key.to_property_key(context)?;
 
         // Fast Path:
+        //
+        // Writing a dense element the array owns and appending one are what
+        // `OrdinarySet(array, index, value, receiver)` does only when the receiver is the array.
+        // With another receiver, such as the `this` of `super[index] = value` in a method whose
+        // home object inherits from an array, the property is defined on the receiver. A receiver
+        // read from the register of an array is that array, so `o[k] = v`, which passes one
+        // register as both, skips comparing the values.
         'fast_path: {
             if object.is_array()
                 && let PropertyKey::Index(index) = &key
+                && (same_register
+                    || receiver
+                        .as_object()
+                        .is_some_and(|receiver| JsObject::equals(&receiver, &object)))
             {
                 let mut object_borrowed = object.borrow_mut();
 
@@ -184,12 +196,7 @@ impl SetPropertyByValue {
                     == Some(index.get());
                 drop(object_borrowed);
 
-                if is_append
-                    && receiver
-                        .as_object()
-                        .is_some_and(|receiver| JsObject::equals(&receiver, &object))
-                    && append_dense_array_element(&object, index.get(), &value, context)
-                {
+                if is_append && append_dense_array_element(&object, index.get(), &value, context) {
                     return Ok(());
                 }
             }
