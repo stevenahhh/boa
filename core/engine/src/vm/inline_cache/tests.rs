@@ -1,8 +1,9 @@
 use boa_gc::Gc;
 use boa_parser::Source;
+use indoc::indoc;
 
 use crate::{
-    Context, JsObject, JsResult, JsValue,
+    Context, JsObject, JsResult, JsValue, TestAction,
     builtins::{OrdinaryObject, function::OrdinaryFunction},
     js_string,
     object::{
@@ -10,6 +11,7 @@ use crate::{
         shape::slot::SlotAttributes,
     },
     property::{Attribute, PropertyDescriptor, PropertyKey},
+    run_test_actions,
     vm::CodeBlock,
 };
 
@@ -464,4 +466,358 @@ fn test_megamorphic_inline_cache() -> JsResult<()> {
     assert!(code.ic[0].megamorphic.get());
 
     Ok(())
+}
+
+/// A method `m` and a getter `g` of `top`, found `DEPTH` prototypes up from `receiver`. The inline
+/// cache stores lookups that find the property one prototype up; three prototypes up is looked
+/// up without it.
+const CHAIN: &str = indoc! {r#"
+    const top = { m() { return "top.m"; } };
+    Object.defineProperty(top, "g", { get() { return "top.g"; }, configurable: true });
+    const middle = Object.create(top);
+    const near = Object.create(middle);
+    const receiver = Object.create(DEPTH === 1 ? top : near);
+    function read() { return receiver.m() + " " + receiver.g; }
+"#};
+
+fn chain(depth: u8) -> String {
+    format!("const DEPTH = {depth};\n{CHAIN}")
+}
+
+/// Runs `source`, which defines `read()`, calls `read()` until its property accesses are cached,
+/// runs `mutate` and checks that `read()` then returns `expected`, as an uncached lookup does.
+#[track_caller]
+fn assert_warm_site_sees(source: &str, mutate: &str, expected: &'static str) {
+    run_test_actions([
+        TestAction::run(source.to_owned()),
+        TestAction::run("for (let i = 0; i < 5; i++) read();"),
+        TestAction::run(mutate.to_owned()),
+        TestAction::assert_eq("String(read())", js_string!(expected)),
+    ]);
+}
+
+#[test]
+fn prototype_hits_are_cached_one_level_up() {
+    run_test_actions([
+        TestAction::run(chain(1)),
+        TestAction::run("for (let i = 0; i < 5; i++) read();"),
+        TestAction::assert_eq("read()", js_string!("top.m top.g")),
+        TestAction::inspect_context(|context| {
+            let read = context
+                .global_object()
+                .get(js_string!("read"), context)
+                .expect("read is defined");
+            let (_, code) = get_codeblock(&read).expect("read is an ordinary function");
+            let prototype_hits = code
+                .ic
+                .iter()
+                .filter(|ic| {
+                    ic.entries
+                        .borrow()
+                        .iter()
+                        .any(|entry| entry.slot.attributes.contains(SlotAttributes::PROTOTYPE))
+                })
+                .count();
+            assert_eq!(prototype_hits, 2, "the method and the getter are cached");
+        }),
+    ]);
+}
+
+#[test]
+fn shadowing_on_the_receiver_invalidates_a_prototype_hit() {
+    for depth in [1, 3] {
+        assert_warm_site_sees(
+            &chain(depth),
+            r#"receiver.m = () => "own.m"; Object.defineProperty(receiver, "g", { value: "own.g" });"#,
+            "own.m own.g",
+        );
+    }
+}
+
+#[test]
+fn shadowing_on_an_intermediate_prototype_invalidates_a_prototype_hit() {
+    assert_warm_site_sees(
+        &chain(3),
+        r#"middle.m = () => "middle.m"; Object.defineProperty(near, "g", { get() { return "near.g"; } });"#,
+        "middle.m near.g",
+    );
+}
+
+#[test]
+fn shadowing_on_a_receiver_with_a_unique_shape_invalidates_a_prototype_hit() {
+    assert_warm_site_sees(
+        indoc! {r#"
+            function f() {}
+            function read() { return [f.hasOwnProperty === Object.prototype.hasOwnProperty, Math.hasOwnProperty === Object.prototype.hasOwnProperty].join(" "); }
+        "#},
+        "Function.prototype.hasOwnProperty = () => 0; Math.hasOwnProperty = () => 0;",
+        "false false",
+    );
+}
+
+#[test]
+fn redefining_the_holders_property_is_seen_by_a_prototype_hit() {
+    for depth in [1, 3] {
+        assert_warm_site_sees(
+            &chain(depth),
+            r#"top.m = () => "new.m"; Object.defineProperty(top, "g", { get() { return "new.g"; } });"#,
+            "new.m new.g",
+        );
+    }
+}
+
+#[test]
+fn deleting_the_holders_property_invalidates_a_prototype_hit() {
+    for depth in [1, 3] {
+        assert_warm_site_sees(&chain(depth), "delete top.g;", "top.m undefined");
+    }
+}
+
+#[test]
+fn deleting_an_earlier_property_of_the_holder_keeps_a_prototype_hit_correct() {
+    assert_warm_site_sees(
+        indoc! {r#"
+            function P() {}
+            P.prototype.a = 1;
+            P.prototype.m = 2;
+            const p = new P();
+            function read() { return p.m; }
+        "#},
+        "delete P.prototype.a;",
+        "2",
+    );
+}
+
+#[test]
+fn data_and_accessor_conversions_invalidate_a_prototype_hit() {
+    for depth in [1, 3] {
+        assert_warm_site_sees(
+            &chain(depth),
+            indoc! {r#"
+                Object.defineProperty(top, "m", { get() { return () => "accessor.m"; }, configurable: true });
+                Object.defineProperty(top, "g", { value: "data.g", writable: true, configurable: true });
+            "#},
+            "accessor.m data.g",
+        );
+    }
+}
+
+#[test]
+fn prototype_changes_invalidate_a_prototype_hit() {
+    assert_warm_site_sees(
+        &chain(3),
+        r#"Object.setPrototypeOf(middle, { m() { return "other.m"; }, get g() { return "other.g"; } });"#,
+        "other.m other.g",
+    );
+    assert_warm_site_sees(
+        &chain(3),
+        r#"near.__proto__ = { m() { return "proto.m"; }, get g() { return "proto.g"; } };"#,
+        "proto.m proto.g",
+    );
+    for depth in [1, 3] {
+        assert_warm_site_sees(
+            &chain(depth),
+            r#"Object.setPrototypeOf(receiver, { m() { return "direct.m"; }, g: "direct.g" });"#,
+            "direct.m direct.g",
+        );
+    }
+    assert_warm_site_sees(
+        &chain(1),
+        r#"Object.setPrototypeOf(top, { m() { return "above.m"; }, g: "above.g" });"#,
+        "top.m top.g",
+    );
+}
+
+#[test]
+fn freezing_the_holder_keeps_prototype_hits_correct() {
+    for depth in [1, 3] {
+        assert_warm_site_sees(&chain(depth), "Object.freeze(top);", "top.m top.g");
+    }
+    assert_warm_site_sees(
+        &chain(1),
+        r#"Object.defineProperty(top, "m", { configurable: false }); Object.defineProperty(top, "g", { configurable: false });"#,
+        "top.m top.g",
+    );
+    run_test_actions([
+        TestAction::run(indoc! {r#"
+            const log = [];
+            const top = { set x(v) { log.push(v); } };
+            const receiver = Object.create(top);
+            function write(v) { receiver.x = v; }
+            for (let i = 0; i < 5; i++) write(i);
+            Object.freeze(top);
+            write("frozen");
+        "#}),
+        TestAction::assert_eq(
+            r#"log.join() + " " + Object.hasOwn(receiver, "x")"#,
+            js_string!("0,1,2,3,4,frozen false"),
+        ),
+    ]);
+}
+
+#[test]
+fn each_receiver_shape_of_a_site_checks_its_own_holder() {
+    assert_warm_site_sees(
+        indoc! {r#"
+            const a = { first: 1, m: "a.m" };
+            const b = { m: "b.m" };
+            const fromA = Object.create(a);
+            const fromB = Object.create(b);
+            function get(o) { return o.m; }
+            function read() { return get(fromA) + " " + get(fromB); }
+        "#},
+        r#"delete a.first; b.m = "b.m2";"#,
+        "a.m b.m2",
+    );
+}
+
+#[test]
+fn lookups_through_a_proxy_are_not_cached() {
+    run_test_actions([
+        TestAction::run(indoc! {r#"
+            let traps = 0;
+            const top = { m: "top.m" };
+            const proxy = new Proxy(Object.create(top), {
+                get(target, key, receiver) { traps++; return Reflect.get(target, key, receiver); },
+            });
+            const receiver = Object.create(proxy);
+            function read() { return receiver.m; }
+            for (let i = 0; i < 5; i++) read();
+        "#}),
+        TestAction::assert_eq("read() + \" \" + traps", js_string!("top.m 6")),
+    ]);
+}
+
+/// `write()` assigns through a setter of `top`, `DEPTH` prototypes up from `receiver`, until the
+/// assignment is cached; then that property becomes a data property and `write("own")` must create
+/// a property on `receiver`.
+const SETTER_CHAIN: &str = indoc! {r#"
+    let stored = "";
+    const top = { set x(v) { stored = v; } };
+    const middle = Object.create(top);
+    const receiver = Object.create(DEPTH === 1 ? top : Object.create(middle));
+    function write(v) { receiver.x = v; }
+    for (let i = 0; i < 5; i++) write("setter");
+    Object.defineProperty(DEPTH === 1 ? top : middle, "x", { value: "data", writable: true, configurable: true });
+    write("own");
+"#};
+
+#[test]
+fn assignment_through_a_prototype_setter_sees_a_new_data_property() {
+    for depth in [1, 3] {
+        run_test_actions([
+            TestAction::run(format!("const DEPTH = {depth};\n{SETTER_CHAIN}")),
+            TestAction::assert_eq(
+                r#"stored + " " + Object.hasOwn(receiver, "x") + " " + receiver.x"#,
+                js_string!("setter true own"),
+            ),
+        ]);
+    }
+}
+
+#[test]
+fn deleting_an_earlier_property_of_the_holder_keeps_a_prototype_setter_hit_correct() {
+    run_test_actions([
+        TestAction::run(indoc! {r#"
+            const log = [];
+            function P() {}
+            P.prototype.a = 1;
+            Object.defineProperty(P.prototype, "x", { set(v) { log.push("set:" + v); }, configurable: true });
+            P.prototype.b = function () { log.push("b called"); };
+            const p = new P();
+            function write(v) { p.x = v; }
+            for (let i = 0; i < 5; i++) write(i);
+            log.length = 0;
+            delete P.prototype.a;
+            write("after");
+        "#}),
+        TestAction::assert_eq(
+            r#"log.join() + " " + Object.hasOwn(p, "x")"#,
+            js_string!("set:after false"),
+        ),
+    ]);
+}
+
+#[test]
+fn global_name_lookups_see_changes_of_the_global_objects_prototype_chain() {
+    assert_warm_site_sees(
+        indoc! {r#"
+            Object.prototype.answer = 1;
+            Object.prototype.question = 2;
+            function read() { return question; }
+        "#},
+        "delete Object.prototype.answer;",
+        "2",
+    );
+    assert_warm_site_sees(
+        indoc! {r#"
+            Object.prototype.question = 2;
+            function read() { return question; }
+        "#},
+        "globalThis.question = 3;",
+        "3",
+    );
+}
+
+#[test]
+fn an_accessor_that_changes_the_objects_during_the_lookup_does_not_cache_a_stale_slot() {
+    run_test_actions([
+        TestAction::run(indoc! {r#"
+            const o = { get x() { delete this.x; this.y = 1; return 1; }, z: 5 };
+            function read() { return o.x; }
+            const first = read();
+        "#}),
+        TestAction::assert_eq("first + \" \" + read()", js_string!("1 undefined")),
+    ]);
+    run_test_actions([
+        TestAction::run(indoc! {r#"
+            const top = { a: 1, get x() { delete top.a; return "x"; }, w: "w" };
+            const p = Object.create(top);
+            function read() { return p.x; }
+            const first = read();
+        "#}),
+        TestAction::assert_eq("first + \" \" + read()", js_string!("x x")),
+    ]);
+    run_test_actions([
+        TestAction::run(indoc! {r#"
+            const log = [];
+            const o = { set x(v) { log.push(v); delete this.x; this.y = 1; }, z() { log.push("z called"); } };
+            function write(v) { o.x = v; }
+            write(1);
+            write(2);
+        "#}),
+        TestAction::assert_eq(
+            r#"log.join() + " " + o.x + " " + Object.hasOwn(o, "x")"#,
+            js_string!("1 2 true"),
+        ),
+    ]);
+}
+
+/// `read()` finds `m` on `top`, `DEPTH` prototypes up from `receiver`; then every object of that
+/// chain becomes garbage and new chains are allocated, possibly at the same addresses.
+const COLLECTED_CHAIN: &str = indoc! {r#"
+    function chain(tag) {
+        const top = { m: tag };
+        return DEPTH === 1 ? Object.create(top) : Object.create(Object.create(Object.create(top)));
+    }
+    let receiver = chain("first");
+    function read() { return receiver.m; }
+    for (let i = 0; i < 5; i++) read();
+    receiver = null;
+"#};
+
+#[test]
+fn a_collected_holder_does_not_satisfy_a_prototype_hit() {
+    for depth in [1, 3] {
+        run_test_actions([
+            TestAction::run(format!("const DEPTH = {depth};\n{COLLECTED_CHAIN}")),
+            TestAction::inspect_context(|_| boa_gc::force_collect()),
+            TestAction::run(indoc! {r#"
+                const fresh = [];
+                for (let i = 0; i < 100; i++) fresh.push(chain("second" + i));
+                receiver = fresh[99];
+            "#}),
+            TestAction::assert_eq("read()", js_string!("second99")),
+        ]);
+    }
 }

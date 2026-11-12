@@ -489,6 +489,13 @@ impl WeakSharedShape {
             inner: self.inner.upgrade()?,
         })
     }
+
+    /// Returns `true` if the [`SharedShape`] has not been garbage collected.
+    #[inline]
+    #[must_use]
+    pub(crate) fn is_alive(&self) -> bool {
+        self.inner.is_upgradable()
+    }
 }
 
 impl From<&SharedShape> for WeakSharedShape {

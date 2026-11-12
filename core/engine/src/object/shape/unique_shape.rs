@@ -256,6 +256,13 @@ impl WeakUniqueShape {
             inner: self.inner.upgrade()?,
         })
     }
+
+    /// Returns `true` if the [`UniqueShape`] has not been garbage collected.
+    #[inline]
+    #[must_use]
+    pub(crate) fn is_alive(&self) -> bool {
+        self.inner.is_upgradable()
+    }
 }
 
 impl From<&UniqueShape> for WeakUniqueShape {

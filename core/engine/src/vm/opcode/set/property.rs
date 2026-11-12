@@ -31,40 +31,31 @@ fn set_by_name(
     let ic = &context.vm.frame().code_block().ic[usize::from(index)];
 
     let object_borrowed = object.borrow();
-    if let Some((shape, slot)) = ic.get(object_borrowed.shape()) {
-        let slot_index = slot.index as usize;
-
-        if slot.attributes.is_accessor_descriptor() {
-            let result = if slot.attributes.contains(SlotAttributes::PROTOTYPE) {
-                let prototype = shape.prototype().expect("prototype should have value");
-                let prototype = prototype.borrow();
-
-                prototype.properties().storage[slot_index + 1].clone()
-            } else {
-                object_borrowed.properties().storage[slot_index + 1].clone()
-            };
-
-            drop(object_borrowed);
-            if slot.attributes.has_set() && result.is_object() {
-                result.as_object().expect("should contain getter").call(
+    let cached = ic.get(object_borrowed.properties(), |properties, slot| {
+        slot.attributes
+            .is_accessor_descriptor()
+            .then(|| properties.storage[slot.index as usize + 1].clone())
+    });
+    drop(object_borrowed);
+    if let Some((slot, setter)) = cached {
+        if let Some(setter) = setter {
+            if slot.attributes.has_set() && setter.is_object() {
+                setter.as_object().expect("should contain setter").call(
                     receiver,
                     std::slice::from_ref(&value),
                     context,
                 )?;
             }
-        } else if slot.attributes.contains(SlotAttributes::PROTOTYPE) {
-            let prototype = shape.prototype().expect("prototype should have value");
-            let mut prototype = prototype.borrow_mut();
-
-            prototype.properties_mut().storage[slot_index] = value.clone();
-        } else {
-            drop(object_borrowed);
-            let mut object_borrowed = object.borrow_mut();
-            object_borrowed.properties_mut().storage[slot_index] = value.clone();
+            return Ok(());
         }
-        return Ok(());
+        // `OrdinarySet` never caches a data property found on the prototype: assigning to it
+        // creates a property on the receiver.
+        if !slot.attributes.contains(SlotAttributes::PROTOTYPE) {
+            let mut object_borrowed = object.borrow_mut();
+            object_borrowed.properties_mut().storage[slot.index as usize] = value.clone();
+            return Ok(());
+        }
     }
-    drop(object_borrowed);
 
     let name: PropertyKey = ic.name.clone().into();
 

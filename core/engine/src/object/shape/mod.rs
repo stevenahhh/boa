@@ -258,6 +258,16 @@ impl WeakShape {
             WeakShape::Unique(shape) => Some(shape.upgrade()?.into()),
         }
     }
+
+    /// Returns `true` if the [`Shape`] has not been garbage collected, without upgrading.
+    #[inline]
+    #[must_use]
+    pub(crate) fn is_alive(&self) -> bool {
+        match self {
+            WeakShape::Shared(shape) => shape.is_alive(),
+            WeakShape::Unique(shape) => shape.is_alive(),
+        }
+    }
 }
 
 impl From<&Shape> for WeakShape {
