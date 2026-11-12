@@ -1100,6 +1100,9 @@ pub struct IntrinsicObjects {
     /// [`%Array.prototype.toString%`](https://tc39.es/ecma262/#sec-array.prototype.tostring)
     array_prototype_to_string: JsFunction,
 
+    /// [`%ArrayIteratorPrototype%.next`](https://tc39.es/ecma262/#sec-%arrayiteratorprototype%.next)
+    array_iterator_next: JsFunction,
+
     /// Cached iterator prototypes.
     iterator_prototypes: IteratorPrototypes,
 
@@ -1172,6 +1175,7 @@ impl IntrinsicObjects {
             throw_type_error: JsFunction::empty_intrinsic_function(false),
             array_prototype_values: JsFunction::empty_intrinsic_function(false),
             array_prototype_to_string: JsFunction::empty_intrinsic_function(false),
+            array_iterator_next: JsFunction::empty_intrinsic_function(false),
             iterator_prototypes: IteratorPrototypes::default(),
             generator: JsObject::with_null_proto(),
             async_generator: JsObject::with_null_proto(),
@@ -1222,6 +1226,15 @@ impl IntrinsicObjects {
     #[must_use]
     pub fn array_prototype_to_string(&self) -> JsFunction {
         self.array_prototype_to_string.clone()
+    }
+
+    /// Gets the [`%ArrayIteratorPrototype%.next`][spec] intrinsic function.
+    ///
+    /// [spec]: https://tc39.es/ecma262/#sec-%arrayiteratorprototype%.next
+    #[inline]
+    #[must_use]
+    pub(crate) const fn array_iterator_next(&self) -> &JsFunction {
+        &self.array_iterator_next
     }
 
     /// Gets the cached iterator prototypes.

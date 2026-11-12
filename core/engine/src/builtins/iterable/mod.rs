@@ -2,7 +2,7 @@
 
 use crate::{
     Context, JsResult, JsValue,
-    builtins::{BuiltInBuilder, IntrinsicObject},
+    builtins::{BuiltInBuilder, IntrinsicObject, array::ArrayIterator},
     context::intrinsics::Intrinsics,
     error::JsNativeError,
     js_string,
@@ -393,7 +393,18 @@ pub struct IteratorRecord {
     done: bool,
 
     /// The result of the last call to `next`.
-    last_result: IteratorResult,
+    last_result: LastResult,
+}
+
+/// The result of the last call to `next` of an [`IteratorRecord`].
+#[derive(Clone, Debug, Finalize, Trace)]
+enum LastResult {
+    /// The object returned by the `next` method.
+    Object(IteratorResult),
+
+    /// The `value` and `done` of the result object a built-in `next` method would have
+    /// returned. The object itself is created only when something asks for it.
+    Builtin(JsValue, bool),
 }
 
 impl IteratorRecord {
@@ -405,9 +416,9 @@ impl IteratorRecord {
             iterator,
             next_method,
             done: false,
-            last_result: IteratorResult {
+            last_result: LastResult::Object(IteratorResult {
                 object: JsObject::with_null_proto(),
-            },
+            }),
         }
     }
 
@@ -422,8 +433,19 @@ impl IteratorRecord {
     }
 
     /// Gets the last result object of the iterator record.
-    pub(crate) const fn last_result(&self) -> &IteratorResult {
-        &self.last_result
+    pub(crate) fn last_result_object(&mut self, context: &mut Context) -> JsObject {
+        match &self.last_result {
+            LastResult::Object(result) => result.object().clone(),
+            LastResult::Builtin(value, done) => {
+                let object = create_iter_result_object(value.clone(), *done, context)
+                    .as_object()
+                    .expect("iterator result objects are objects");
+                self.last_result = LastResult::Object(IteratorResult {
+                    object: object.clone(),
+                });
+                object
+            }
+        }
     }
 
     /// Runs `f`, setting the `done` field of this `IteratorRecord` to `true` if `f` returns
@@ -441,7 +463,10 @@ impl IteratorRecord {
 
     /// Gets the current value of the `IteratorRecord`.
     pub(crate) fn value(&mut self, context: &mut Context) -> JsResult<JsValue> {
-        self.set_done_on_err(|iter| iter.last_result.value(context))
+        self.set_done_on_err(|iter| match &iter.last_result {
+            LastResult::Object(result) => result.value(context),
+            LastResult::Builtin(value, _) => Ok(value.clone()),
+        })
     }
 
     /// Get the `[[Done]]` field of the `IteratorRecord`.
@@ -465,7 +490,7 @@ impl IteratorRecord {
             // 3. If done is true, return false.
             iter.done = result.complete(context)?;
 
-            iter.last_result = result;
+            iter.last_result = LastResult::Object(result);
 
             Ok(())
         })
@@ -523,6 +548,12 @@ impl IteratorRecord {
     /// [spec]: https://tc39.es/ecma262/#sec-iteratorstep
     pub(crate) fn step(&mut self, context: &mut Context) -> JsResult<bool> {
         self.set_done_on_err(|iter| {
+            if let Some((value, done)) = iter.step_builtin(context)? {
+                iter.done = done;
+                iter.last_result = LastResult::Builtin(value, done);
+                return Ok(done);
+            }
+
             // 1. Let result be ? IteratorNext(iteratorRecord).
             let result = iter.next(None, context)?;
 
@@ -536,11 +567,32 @@ impl IteratorRecord {
             //     b. Return done.
             iter.done = result.complete(context)?;
 
-            iter.last_result = result;
+            iter.last_result = LastResult::Object(result);
 
             // 6. Return result.
             Ok(iter.done)
         })
+    }
+
+    /// Runs the call to the `next` method of `IteratorStep` without creating the result object,
+    /// returning its `value` and `done`, if `next` is a built-in of the current realm whose
+    /// steps run no user code for this iterator. Returns `None`, changing nothing, otherwise.
+    ///
+    /// Reading `value` and `done` of a result object a built-in creates runs no user code
+    /// either: both are own data properties of a new ordinary object.
+    fn step_builtin(&self, context: &mut Context) -> JsResult<Option<(JsValue, bool)>> {
+        let Some(next) = self.next_method.as_object() else {
+            return Ok(None);
+        };
+        let intrinsics = context.intrinsics().objects();
+        let step = if JsObject::equals(&next, intrinsics.array_iterator_next()) {
+            ArrayIterator::step_dense
+        } else {
+            return Ok(None);
+        };
+        // The checks of every call to a native function.
+        context.check_runtime_limits()?;
+        Ok(step(&self.iterator, context))
     }
 
     /// `IteratorStepValue ( iteratorRecord )`

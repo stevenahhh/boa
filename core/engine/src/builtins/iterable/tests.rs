@@ -502,3 +502,254 @@ fn iterator_includes_errors() {
         ),
     ]);
 }
+
+// ── Iteration of arrays by the built-in ArrayIterator next (fast path bail-outs) ──
+// Expected values come from node v26.7.0.
+
+#[test]
+fn array_iteration_next_replaced_before() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const o = Object.getPrototypeOf([][Symbol.iterator]()); const n = o.next; let c = 0; o.next = function () { c++; return n.call(this); }; let s = 0; for (const x of [1, 2, 3]) s += x; o.next = n; return s + ":" + c; })())"#,
+        js_str!("6:4"),
+    )]);
+}
+
+#[test]
+fn array_iteration_next_replaced_during() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const o = Object.getPrototypeOf([][Symbol.iterator]()); const n = o.next; let s = ""; for (const x of [1, 2, 3]) { s += x; o.next = function () { return { value: 9, done: true }; }; } o.next = n; return s; })())"#,
+        js_str!("123"),
+    )]);
+}
+
+#[test]
+fn array_iteration_symbol_iterator_replaced() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const d = Object.getOwnPropertyDescriptor(Array.prototype, Symbol.iterator); Array.prototype[Symbol.iterator] = function* () { yield "a"; yield "b"; }; const r = [...[1, 2, 3]].join(); Object.defineProperty(Array.prototype, Symbol.iterator, d); return r; })())"#,
+        js_str!("a,b"),
+    )]);
+}
+
+#[test]
+fn array_iteration_own_symbol_iterator() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2]; a[Symbol.iterator] = function* () { yield 7; }; return [...a].join(); })())"#,
+        js_str!("7"),
+    )]);
+}
+
+#[test]
+fn array_iteration_holes_proto() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { Array.prototype[1] = "p"; const r = [...[1, , 3]].join(); delete Array.prototype[1]; return r; })())"#,
+        js_str!("1,p,3"),
+    )]);
+}
+
+#[test]
+fn array_iteration_holes_plain() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String([...[1, , 3]].map(String).join())"#,
+        js_str!("1,undefined,3"),
+    )]);
+}
+
+#[test]
+fn array_iteration_getter_element() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2, 3]; let g = 0; Object.defineProperty(a, 1, { get() { g++; return 20; } }); let s = []; for (const x of a) s.push(x); return s.join() + ":" + g; })())"#,
+        js_str!("1,20,3:1"),
+    )]);
+}
+
+#[test]
+fn array_iteration_push_during() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2, 3]; let s = []; for (const x of a) { s.push(x); if (a.length < 6) a.push(x * 10); } return s.join(); })())"#,
+        js_str!("1,2,3,10,20,30"),
+    )]);
+}
+
+#[test]
+fn array_iteration_shrink_during() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2, 3, 4, 5]; let s = []; for (const x of a) { s.push(x); a.length = 2; } return s.join(); })())"#,
+        js_str!("1,2"),
+    )]);
+}
+
+#[test]
+fn array_iteration_length_extended() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2]; a.length = 4; return [...a].map(String).join(); })())"#,
+        js_str!("1,2,undefined,undefined"),
+    )]);
+}
+
+#[test]
+fn array_iteration_splice_during() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2, 3, 4]; let s = []; for (const x of a) { s.push(x); if (x === 1) a.splice(0, 1); } return s.join(); })())"#,
+        js_str!("1,3,4"),
+    )]);
+}
+
+#[test]
+fn array_iteration_proxy_array() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const log = []; const p = new Proxy([1, 2], { get(t, k, r) { log.push(String(k)); return Reflect.get(t, k, r); } }); const r = [...p].join(); return r + "|" + log.join(); })())"#,
+        js_str!("1,2|Symbol(Symbol.iterator),length,0,length,1,length"),
+    )]);
+}
+
+#[test]
+fn array_iteration_subclass() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { class A extends Array { *[Symbol.iterator]() { yield* super[Symbol.iterator](); yield "x"; } } const a = A.from([1, 2]); return [...a].join(); })())"#,
+        js_str!("1,2,x"),
+    )]);
+}
+
+#[test]
+fn array_iteration_subclass_plain() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { class A extends Array {} const a = new A(); a.push(1, 2); let s = 0; for (const x of a) s += x; return s; })())"#,
+        js_str!("3"),
+    )]);
+}
+
+#[test]
+fn array_iteration_frozen() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String([...Object.freeze([1, 2, 3])].join())"#,
+        js_str!("1,2,3"),
+    )]);
+}
+
+#[test]
+fn array_iteration_typed_array() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String([...new Int8Array([1, 2, 3])].join())"#,
+        js_str!("1,2,3"),
+    )]);
+}
+
+#[test]
+fn array_iteration_arguments_mapped() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((function (a, b) { arguments[1] = 9; return [...arguments].join(); })(1, 2, 3))"#,
+        js_str!("1,9,3"),
+    )]);
+}
+
+#[test]
+fn array_iteration_arguments_strict() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((function (a, b) { "use strict"; return [...arguments].join(); })(1, 2, 3))"#,
+        js_str!("1,2,3"),
+    )]);
+}
+
+#[test]
+fn array_iteration_break_return() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const P = Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]())); let c = 0; P.return = function () { c++; return {}; }; for (const x of [1, 2, 3]) { if (x === 2) break; } const [a] = [5, 6]; delete P.return; return c + ":" + a; })())"#,
+        js_str!("2:5"),
+    )]);
+}
+
+#[test]
+fn array_iteration_entries_keys() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String([...["a", "b"].entries()].join(";") + "|" + [...["a", "b"].keys()].join())"#,
+        js_str!("0,a;1,b|0,1"),
+    )]);
+}
+
+#[test]
+fn array_iteration_entries_destructure() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { let s = ""; for (const [i, v] of ["a", "b"].entries()) s += i + v; return s; })())"#,
+        js_str!("0a1b"),
+    )]);
+}
+
+#[test]
+fn array_iteration_destructure_defaults_rest() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const [a, b = 5, , ...r] = [1, undefined, 3, 4, 5]; return [a, b, r.join()].join(";"); })())"#,
+        js_str!("1;5;4,5"),
+    )]);
+}
+
+#[test]
+fn array_iteration_getter_throws() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2]; Object.defineProperty(a, 1, { get() { throw new Error("boom"); } }); try { [...a]; } catch (e) { return e.message; } })())"#,
+        js_str!("boom"),
+    )]);
+}
+
+#[test]
+fn array_iteration_yield_star() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { function* g() { yield* [1, 2]; } const it = g(); const r = it.next(); return Object.keys(r).join() + ":" + r.value + ":" + (Object.getPrototypeOf(r) === Object.prototype); })())"#,
+        js_str!("value,done:1:true"),
+    )]);
+}
+
+#[test]
+fn array_iteration_manual_next() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const it = [1][Symbol.iterator](); const a = it.next(), b = it.next(), c = it.next(); return [a.value, a.done, b.value, b.done, c.done, a !== it.next()].join(); })())"#,
+        js_str!("1,false,,true,true,true"),
+    )]);
+}
+
+#[test]
+fn array_iteration_iterator_reuse() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const it = [1, 2, 3][Symbol.iterator](); it.next(); return [...it].join() + "|" + [...it].length; })())"#,
+        js_str!("2,3|0"),
+    )]);
+}
+
+#[test]
+fn array_iteration_sparse() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = []; a[1000000] = 1; a[0] = 2; let n = 0; for (const x of a) { n++; if (n > 3) break; } return n + ":" + [...a.slice(0, 2)].map(String).join(); })())"#,
+        js_str!("4:2,undefined"),
+    )]);
+}
+
+#[test]
+fn array_iteration_array_from_iter() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String(Array.from([1, 2, 3], (x) => x * 2).join())"#,
+        js_str!("2,4,6"),
+    )]);
+}
+
+#[test]
+fn array_iteration_array_like_iterator_call() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const o = { length: 2, 0: "a", 1: "b" }; return [...Array.prototype.values.call(o)].join(); })())"#,
+        js_str!("a,b"),
+    )]);
+}
+
+#[test]
+fn array_iteration_non_array_with_dense() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const o = { 0: "a", 1: "b", 2: "c", length: 1 }; return [...Array.prototype.values.call(o)].join(); })())"#,
+        js_str!("a"),
+    )]);
+}
+
+#[test]
+fn array_iteration_typed_out_of_bounds() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const b = new ArrayBuffer(4, { maxByteLength: 8 }); const t = new Uint8Array(b, 0, 4); const it = t[Symbol.iterator](); it.next(); b.resize(2); try { it.next(); return "no"; } catch (e) { return e.constructor.name; } })())"#,
+        js_str!("TypeError"),
+    )]);
+}

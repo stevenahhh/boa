@@ -38,9 +38,26 @@ pub(crate) struct ArrayIterator {
 
 impl IntrinsicObject for ArrayIterator {
     fn init(realm: &Realm) {
+        let next = BuiltInBuilder::callable_with_object(
+            realm,
+            realm
+                .intrinsics()
+                .objects()
+                .array_iterator_next()
+                .clone()
+                .into(),
+            Self::next,
+        )
+        .name(js_string!("next"))
+        .build();
+
         BuiltInBuilder::with_intrinsic::<Self>(realm)
             .prototype(realm.intrinsics().constructors().iterator().prototype())
-            .static_method(Self::next, js_string!("next"), 0)
+            .static_property(
+                js_string!("next"),
+                next,
+                Attribute::WRITABLE | Attribute::CONFIGURABLE,
+            )
             .static_property(
                 JsSymbol::to_string_tag(),
                 js_string!("Array Iterator"),
@@ -83,6 +100,39 @@ impl ArrayIterator {
             Self::new(array, kind),
         );
         array_iterator.into()
+    }
+
+    /// Runs `%ArrayIteratorPrototype%.next` on `iterator` without creating the result object,
+    /// returning its `value` and `done`, when that cannot run any user code: `iterator` is an
+    /// `ArrayIterator` that is either done or reads an element of the dense storage of an
+    /// `Array`. Elements of dense storage are own data properties below `length`, so the steps
+    /// of `next` read the same value. Returns `None`, changing nothing, in every other case.
+    pub(crate) fn step_dense(
+        iterator: &JsObject,
+        context: &mut Context,
+    ) -> Option<(JsValue, bool)> {
+        let mut array_iterator = iterator.downcast_mut::<Self>()?;
+        if array_iterator.done {
+            return Some((JsValue::undefined(), true));
+        }
+        if !array_iterator.array.is_array() {
+            return None;
+        }
+        let index = u32::try_from(array_iterator.next_index).ok()?;
+        let element = array_iterator
+            .array
+            .borrow()
+            .properties()
+            .get_dense_property(index)?;
+        array_iterator.next_index += 1;
+        let value = match array_iterator.kind {
+            PropertyNameKind::Key => index.into(),
+            PropertyNameKind::Value => element,
+            PropertyNameKind::KeyAndValue => {
+                Array::create_array_from_list([index.into(), element], context).into()
+            }
+        };
+        Some((value, false))
     }
 
     /// %ArrayIteratorPrototype%.next( )
