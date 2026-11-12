@@ -1,4 +1,5 @@
 use boa_gc::Gc;
+use boa_macros::js_str;
 use boa_parser::Source;
 use indoc::indoc;
 
@@ -941,4 +942,73 @@ fn a_collected_holder_does_not_satisfy_a_prototype_hit() {
             TestAction::assert_eq("read()", js_string!("second99")),
         ]);
     }
+}
+
+#[test]
+fn cached_length_assignment_keeps_the_length_logic_of_exotic_objects() {
+    run_test_actions([
+        // Each loop runs the assignment site three times, the later ones through its cache.
+        TestAction::assert_eq(
+            indoc! {r#"
+                var out = [];
+                for (var i = 0; i < 3; i++) {
+                    var a = [1, 2, 3];
+                    a.length = 1;
+                    out.push(a[1] + ':' + a.length + ':' + Object.keys(a).length);
+                }
+                out.join(' ')
+            "#},
+            js_str!("undefined:1:1 undefined:1:1 undefined:1:1"),
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                var out = [];
+                for (var i = 0; i < 3; i++) {
+                    var a = [1, 2];
+                    try { a.length = i === 2 ? -1 : '1'; out.push(typeof a.length + a.length); }
+                    catch (e) { out.push(e.name); }
+                }
+                out.join(' ')
+            "#},
+            js_str!("number1 number1 RangeError"),
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                var out = [];
+                for (var i = 0; i < 3; i++) {
+                    var a = [1, 2, 3];
+                    a.foo = 1;
+                    a.length = 0;
+                    out.push(a.length + ':' + a[0]);
+                }
+                out.join(' ')
+            "#},
+            js_str!("0:undefined 0:undefined 0:undefined"),
+        ),
+        // The length of an arguments object is an ordinary property, and the mapping of the
+        // parameters does not depend on it.
+        TestAction::assert_eq(
+            indoc! {r#"
+                function g(a, b) { arguments.length = 0; b = 5; return arguments[1] + ':' + arguments.length; }
+                [g(1, 2), g(1, 2), g(1, 2)].join(' ')
+            "#},
+            js_str!("5:0 5:0 5:0"),
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                (function () {
+                    'use strict';
+                    var out = [];
+                    for (var i = 0; i < 3; i++) {
+                        var t = new Uint8Array(4);
+                        var s = new String('abc');
+                        try { t.length = 1; out.push('set'); } catch (e) { out.push(e.name + t.length); }
+                        try { s.length = 1; out.push('set'); } catch (e) { out.push(e.name + s.length); }
+                    }
+                    return out.join(' ');
+                })()
+            "#},
+            js_str!("TypeError4 TypeError3 TypeError4 TypeError3 TypeError4 TypeError3"),
+        ),
+    ]);
 }

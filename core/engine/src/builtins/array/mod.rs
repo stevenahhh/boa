@@ -25,6 +25,7 @@ use crate::{
             get_prototype_from_constructor, ordinary_define_own_property,
             ordinary_get_own_property,
         },
+        shape::slot::SlotAttributes,
     },
     property::{Attribute, PropertyDescriptor, PropertyKey, PropertyNameKind},
     realm::Realm,
@@ -3498,8 +3499,12 @@ fn array_exotic_define_own_property(
         // 2. If P is "length", then
         PropertyKey::String(s) if s == &StaticJsStrings::LENGTH => {
             // a. Return ? ArraySetLength(A, Desc).
+            let result = array_set_length(obj, desc, context);
 
-            array_set_length(obj, desc, context)
+            // An inline cache must not store a new length into its slot: ArraySetLength
+            // validates it and deletes the elements at and past it.
+            context.slot().attributes |= SlotAttributes::NOT_CACHEABLE;
+            result
         }
         // 3. Else if P is an array index, then
         PropertyKey::Index(index) => {
