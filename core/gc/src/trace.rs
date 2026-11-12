@@ -31,7 +31,17 @@ impl Tracer {
         }
     }
 
+    /// Marks `node` and queues it to be traced, unless it is already marked.
+    ///
+    /// Marking when queuing puts every node in the queue at most once, however many edges lead to
+    /// it.
     pub(crate) fn enqueue(&mut self, node: GcErasedPointer) {
+        // SAFETY: Only the collector traces, and every node it reaches is valid while it marks.
+        let node_ref = unsafe { node.as_ref() };
+        if node_ref.is_marked() {
+            return;
+        }
+        node_ref.header.mark();
         self.queue.push_back(node);
     }
 
@@ -43,10 +53,6 @@ impl Tracer {
     pub(crate) unsafe fn trace_until_empty(&mut self) {
         while let Some(node) = self.queue.pop_front() {
             let node_ref = unsafe { node.as_ref() };
-            if node_ref.is_marked() {
-                continue;
-            }
-            node_ref.header.mark();
             let trace_fn = node_ref.trace_fn();
 
             // SAFETY: The function pointer is appropriate for this node type because we extract it from it's VTable.
