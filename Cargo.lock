@@ -423,6 +423,7 @@ dependencies = [
  "indoc",
  "intrusive-collections",
  "itertools 0.15.0",
+ "itoa",
  "jemallocator",
  "libc",
  "lz4_flex",

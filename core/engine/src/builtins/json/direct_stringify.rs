@@ -193,14 +193,10 @@ fn write_value(
         JsVariant::Boolean(true) => out.extend_from_slice(&TRUE),
         JsVariant::Boolean(false) => out.extend_from_slice(&FALSE),
         JsVariant::String(string) => Json::quote_json_string_into(&string, out),
-        JsVariant::Integer32(integer) => out.extend(JsString::from(integer).iter()),
-        JsVariant::Float64(number) => {
-            if number.is_finite() {
-                out.extend(JsString::from(number).iter());
-            } else {
-                out.extend_from_slice(&NULL);
-            }
+        JsVariant::Integer32(integer) => {
+            out.extend(itoa::Buffer::new().format(integer).bytes().map(u16::from));
         }
+        JsVariant::Float64(number) => write_number(number, out),
         JsVariant::BigInt(_) => return generic(state, key, holder, out, context),
         JsVariant::Object(object) => match kind(&object, state) {
             Some(kind) => write_kind(state, &object, kind, out, context)?,
@@ -386,6 +382,28 @@ fn write_array(
     Ok(())
 }
 
+/// Appends `Number::toString(number)`, or `null` if `number` is not finite.
+fn write_number(number: f64, out: &mut Vec<u16>) {
+    if !number.is_finite() {
+        out.extend_from_slice(&NULL);
+        return;
+    }
+    // Every integer of magnitude up to 2^53 is a double, so no shorter digit string rounds to it
+    // and its decimal digits are exactly what `Number::toString` prints; -0 prints as 0.
+    #[expect(clippy::float_cmp, reason = "an exact comparison is the point")]
+    if number.trunc() == number && number.abs() <= MAX_EXACT_INTEGER {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the value is an integer of magnitude at most 2^53"
+        )]
+        let integer = number as i64;
+        out.extend(itoa::Buffer::new().format(integer).bytes().map(u16::from));
+        return;
+    }
+    out.extend(ryu_js::Buffer::new().format(number).bytes().map(u16::from));
+}
+
+const MAX_EXACT_INTEGER: f64 = 9_007_199_254_740_992.0;
 const NULL: [u16; 4] = [b'n' as u16, b'u' as u16, b'l' as u16, b'l' as u16];
 const TRUE: [u16; 4] = [b't' as u16, b'r' as u16, b'u' as u16, b'e' as u16];
 const FALSE: [u16; 5] = [
