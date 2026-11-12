@@ -411,6 +411,9 @@ enum LastResult {
     /// The `value` and `done` of the result object a built-in `next` method would have
     /// returned. The object itself is created only when something asks for it.
     Builtin(JsValue, bool),
+
+    /// No call to `next` yet. Reads as an empty object with a `null` prototype.
+    Empty,
 }
 
 impl IteratorRecord {
@@ -422,9 +425,7 @@ impl IteratorRecord {
             iterator,
             next_method,
             done: false,
-            last_result: LastResult::Object(IteratorResult {
-                object: JsObject::with_null_proto(),
-            }),
+            last_result: LastResult::Empty,
         }
     }
 
@@ -451,6 +452,13 @@ impl IteratorRecord {
                 });
                 object
             }
+            LastResult::Empty => {
+                let object = JsObject::with_null_proto();
+                self.last_result = LastResult::Object(IteratorResult {
+                    object: object.clone(),
+                });
+                object
+            }
         }
     }
 
@@ -472,6 +480,7 @@ impl IteratorRecord {
         self.set_done_on_err(|iter| match &iter.last_result {
             LastResult::Object(result) => result.value(context),
             LastResult::Builtin(value, _) => Ok(value.clone()),
+            LastResult::Empty => Ok(JsValue::undefined()),
         })
     }
 
