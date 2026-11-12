@@ -465,3 +465,31 @@ fn json_parse_accepts_every_depth_that_serde_json_accepts() {
         .join()
         .expect("the test thread panicked");
 }
+
+#[test]
+fn json_parse_without_a_reviver_takes_any_depth() {
+    run_test_actions([
+        TestAction::run(indoc! {r#"
+            function depth(value, key) {
+                let levels = 0;
+                while (typeof value === "object") {
+                    value = value[key];
+                    levels++;
+                }
+                return levels + ":" + value;
+            }
+        "#}),
+        TestAction::assert_eq(
+            r#"depth(JSON.parse("[".repeat(10000) + "1" + "]".repeat(10000)), 0)"#,
+            js_str!("10000:1"),
+        ),
+        TestAction::assert_eq(
+            r#"depth(JSON.parse('{"a":'.repeat(10000) + "1" + "}".repeat(10000)), "a")"#,
+            js_str!("10000:1"),
+        ),
+        TestAction::assert_eq(
+            r#"JSON.stringify(JSON.parse('[1, [2, [3]], {"b": [4], "a": {"c": 5}}, 6]'))"#,
+            js_str!(r#"[1,[2,[3]],{"b":[4],"a":{"c":5}},6]"#),
+        ),
+    ]);
+}

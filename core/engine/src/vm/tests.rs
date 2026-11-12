@@ -804,7 +804,7 @@ fn deep_nesting_cases() -> Vec<(&'static str, String, &'static str)> {
         ("to string", "let a = []; for (let i = 0; i < 200000; i++) a = [a]; String(a)", "RangeError"),
         ("binary chain", "eval('1' + '+1'.repeat(200000))", "RangeError"),
         ("member chain", "var o = {}; o.a = o; eval('o' + '.a'.repeat(200000))", "RangeError"),
-        ("json parse", "JSON.parse('['.repeat(200000) + ']'.repeat(200000))", "SyntaxError"),
+        ("json parse", "JSON.parse('['.repeat(200000) + ']'.repeat(200000))", "no error"),
         ("regexp", "new RegExp('('.repeat(100000) + ')'.repeat(100000))", "SyntaxError"),
         ("copy", "let o = {}; for (let i = 0; i < 200000; i++) o = { o }; const copy = (v) => typeof v !== 'object' ? v : { o: copy(v.o) }; copy(o)", "RangeError"),
     ]
