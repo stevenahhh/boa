@@ -2,7 +2,8 @@
 
 use std::fmt::Debug;
 
-use crate::{Context, value::TryFromJs};
+use crate::{Context, TestAction, run_test_actions, value::TryFromJs};
+use boa_macros::js_str;
 use boa_parser::Source;
 
 /// We test nested `toString()` cases:
@@ -511,4 +512,52 @@ where
     let js = context.eval(Source::from_bytes(code)).unwrap();
     let res = T::try_from_js(&js, context).unwrap();
     assert_eq!(expected, res);
+}
+
+#[test]
+fn test_function_constructor_to_string() {
+    run_test_actions([
+        TestAction::assert_eq(
+            "new Function('a', 'b', 'return a + b').toString()",
+            js_str!("function anonymous(a,b\n) {\nreturn a + b\n}"),
+        ),
+        TestAction::assert_eq(
+            "Function().toString()",
+            js_str!("function anonymous(\n) {\n\n}"),
+        ),
+        TestAction::assert_eq(
+            "Function('a, b', 'c', '').toString()",
+            js_str!("function anonymous(a, b,c\n) {\n\n}"),
+        ),
+        TestAction::assert_eq(
+            "Object.getPrototypeOf(function* () {}).constructor('x', 'yield x').toString()",
+            js_str!("function* anonymous(x\n) {\nyield x\n}"),
+        ),
+        TestAction::assert_eq(
+            "Object.getPrototypeOf(async function () {}).constructor('x', 'await x').toString()",
+            js_str!("async function anonymous(x\n) {\nawait x\n}"),
+        ),
+        TestAction::assert_eq(
+            "Object.getPrototypeOf(async function* () {}).constructor('x', 'yield await x').toString()",
+            js_str!("async function* anonymous(x\n) {\nyield await x\n}"),
+        ),
+        // The line feed after the parameters ends a line comment in them.
+        TestAction::assert_eq(
+            "Function('a //', 'return a').toString()",
+            js_str!("function anonymous(a //\n) {\nreturn a\n}"),
+        ),
+        // Functions nested in the body or the parameters keep their own source text.
+        TestAction::assert_eq(
+            "Function('return function inner(a) { return a; }')().toString()",
+            js_str!("function inner(a) { return a; }"),
+        ),
+        TestAction::assert_eq(
+            "Function('f = function g() { return 1 }', 'return f')().toString()",
+            js_str!("function g() { return 1 }"),
+        ),
+        TestAction::assert_eq(
+            "Function('return () => 1')().toString()",
+            js_str!("() => 1"),
+        ),
+    ]);
 }

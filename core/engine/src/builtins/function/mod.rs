@@ -37,7 +37,7 @@ use crate::{
     vm::{ActiveRunnable, CallFrame, CallFrameFlags, CodeBlock},
 };
 use boa_ast::{
-    Position, Span, Spanned, StatementList,
+    LinearPosition, LinearSpan, Position, Span, Spanned, StatementList,
     function::{FormalParameterList, FunctionBody},
     operations::{
         ContainsSymbol, all_private_identifiers_valid, bound_names, contains,
@@ -474,26 +474,55 @@ impl BuiltInFunctionObject {
             context,
         )?;
 
+        // 2-5. Let prefix be "function", "function*", "async function" or "async function*".
+        let prefix = match (r#async, generator) {
+            (false, false) => "function",
+            (false, true) => "function*",
+            (true, false) => "async function",
+            (true, true) => "async function*",
+        };
+        let head = format!("{prefix} anonymous(");
+
+        // 12. Let P be the empty String.
+        // 13. If argCount > 0, then
+        //     a. Set P to parameterStrings[0].
+        //     b. Let k be 1.
+        //     c. Repeat, while k < argCount,
+        //         i. Let nextArgString be parameterStrings[k].
+        //         ii. Set P to the string-concatenation of P, "," (a comma), and nextArgString.
+        //         iii. Set k to k + 1.
+
+        // TODO: Replace with standard `Iterator::intersperse` iterator method when it's stabilized.
+        //       See: <https://github.com/rust-lang/rust/issues/79524>
+        let parameters_text = itertools::Itertools::intersperse(
+            param_list.iter().map(JsString::iter),
+            js_str!(",").iter(),
+        )
+        .flatten()
+        .collect::<Vec<_>>();
+
+        // 15. Let sourceString be the string-concatenation of prefix, " anonymous(", P, 0x000A (LINE FEED), ") {", bodyParseString, and "}".
+        // 16. Let sourceText be StringToCodePoints(sourceString).
+        let mut source_text =
+            boa_ast::SourceText::with_capacity(head.len() + parameters_text.len() + body.len() + 7);
+        for unit in head
+            .encode_utf16()
+            .chain(parameters_text.iter().copied())
+            .chain("\n) {\n".encode_utf16())
+            .chain(body.iter())
+            .chain("\n}".encode_utf16())
+        {
+            source_text.collect_code_point(u32::from(unit));
+        }
+
+        // P and bodyParseString are parsed apart, as the spec requires, but each from the position
+        // it has in sourceString, after spaces in place of what precedes it. The functions nested
+        // in them then find their own source text in sourceText.
         let parameters = if param_list.is_empty() {
             FormalParameterList::default()
         } else {
-            // 12. Let P be the empty String.
-            // 13. If argCount > 0, then
-            //     a. Set P to parameterStrings[0].
-            //     b. Let k be 1.
-            //     c. Repeat, while k < argCount,
-            //         i. Let nextArgString be parameterStrings[k].
-            //         ii. Set P to the string-concatenation of P, "," (a comma), and nextArgString.
-            //         iii. Set k to k + 1.
-
-            // TODO: Replace with standard `Iterator::intersperse` iterator method when it's stabilized.
-            //       See: <https://github.com/rust-lang/rust/issues/79524>
-            let parameters = itertools::Itertools::intersperse(
-                param_list.iter().map(JsString::iter),
-                js_str!(",").iter(),
-            )
-            .flatten()
-            .collect::<Vec<_>>();
+            let mut parameters = vec![u16::from(b' '); head.len()];
+            parameters.extend_from_slice(&parameters_text);
             let mut parser = Parser::new(Source::from_utf16(&parameters));
             parser.set_identifier(context.next_parser_identifier());
             parser.set_stack_limit(context.remaining_native_stack());
@@ -538,7 +567,7 @@ impl BuiltInFunctionObject {
             FunctionBody::new(StatementList::default(), Span::new((1, 1), (1, 1)))
         } else {
             // 14. Let bodyParseString be the string-concatenation of 0x000A (LINE FEED), bodyString, and 0x000A (LINE FEED).
-            let mut body_parse = Vec::with_capacity(body.len());
+            let mut body_parse = vec![u16::from(b' '); head.len() + parameters_text.len() + 4];
             body_parse.push(u16::from(b'\n'));
             body_parse.extend(body.iter());
             body_parse.push(u16::from(b'\n'));
@@ -639,8 +668,6 @@ impl BuiltInFunctionObject {
             body
         };
 
-        // TODO: create SourceText : "anonymous(" parameters \n ") {" body_parse "}"
-
         let function_span_start = Position::new(1, 1);
         let function_span_end = body.span().end();
         let mut function = boa_ast::function::FunctionExpression::new(
@@ -658,7 +685,12 @@ impl BuiltInFunctionObject {
         }
 
         let in_with = context.vm.frame().environments.has_object_environment();
-        let spanned_source_text = SpannedSourceText::new_empty();
+        let source_span =
+            LinearSpan::new(LinearPosition::new(0), source_text.cur_linear_position());
+        let spanned_source_text = SpannedSourceText::new(
+            crate::spanned_source_text::SourceText::new(source_text),
+            Some(source_span),
+        );
 
         let code = FunctionCompiler::new(spanned_source_text)
             .name(js_string!("anonymous"))
