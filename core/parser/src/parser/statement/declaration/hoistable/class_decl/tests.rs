@@ -51,6 +51,7 @@ fn check_async_ordinary_method() {
                 None,
                 None,
                 elements.into(),
+                boa_ast::LinearSpan::default(),
             )
             .into(),
         )
@@ -88,6 +89,7 @@ fn check_async_field_initialization() {
                 None,
                 None,
                 elements.into(),
+                boa_ast::LinearSpan::default(),
             )))
             .into(),
         ],
@@ -123,6 +125,7 @@ fn check_async_field() {
                 None,
                 None,
                 elements.into(),
+                boa_ast::LinearSpan::default(),
             )))
             .into(),
         ],
@@ -187,6 +190,7 @@ fn check_new_target_with_property_access() {
         None,
         Some(constructor),
         Box::default(),
+        boa_ast::LinearSpan::default(),
     );
 
     let instantiation = Expression::New(
@@ -248,6 +252,7 @@ fn check_non_reserved_keyword_as_identifier() {
                 None,
                 None,
                 vec![].into(),
+                boa_ast::LinearSpan::default(),
             )
             .into(),
         )

@@ -31,6 +31,8 @@ pub struct ClassDeclaration {
 
     #[cfg_attr(feature = "serde", serde(skip))]
     pub(crate) name_scope: Scope,
+
+    linear_span: LinearSpanIgnoreEq,
 }
 
 impl ClassDeclaration {
@@ -42,6 +44,7 @@ impl ClassDeclaration {
         super_ref: Option<Expression>,
         constructor: Option<FunctionExpression>,
         elements: Box<[ClassElement]>,
+        linear_span: LinearSpan,
     ) -> Self {
         Self {
             name,
@@ -49,7 +52,16 @@ impl ClassDeclaration {
             constructor,
             elements,
             name_scope: Scope::default(),
+            linear_span: linear_span.into(),
         }
+    }
+
+    /// Gets the linear span of the class declaration, from the `class` keyword to the closing
+    /// brace: its source text.
+    #[inline]
+    #[must_use]
+    pub const fn linear_span(&self) -> LinearSpan {
+        self.linear_span.0
     }
 
     /// Returns the name of the class declaration.
@@ -177,6 +189,8 @@ pub struct ClassExpression {
 
     span: Span,
 
+    linear_span: LinearSpanIgnoreEq,
+
     #[cfg_attr(feature = "serde", serde(skip))]
     pub(crate) name_scope: Option<Scope>,
 }
@@ -190,6 +204,7 @@ impl ClassExpression {
         super_ref: Option<Expression>,
         constructor: Option<FunctionExpression>,
         elements: Box<[ClassElement]>,
+        linear_span: LinearSpan,
         has_binding_identifier: bool,
         span: Span,
     ) -> Self {
@@ -204,8 +219,17 @@ impl ClassExpression {
             constructor,
             elements,
             span,
+            linear_span: linear_span.into(),
             name_scope,
         }
+    }
+
+    /// Gets the linear span of the class expression, from the `class` keyword to the closing
+    /// brace: its source text.
+    #[inline]
+    #[must_use]
+    pub const fn linear_span(&self) -> LinearSpan {
+        self.linear_span.0
     }
 
     /// Returns the name of the class expression.

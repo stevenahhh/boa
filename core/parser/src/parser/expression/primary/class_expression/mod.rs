@@ -42,14 +42,13 @@ where
     type Output = ClassExpressionNode;
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
-        let class_span_start = cursor
-            .expect(
-                TokenKind::Keyword((Keyword::Class, false)),
-                "class expression",
-                interner,
-            )?
-            .span()
-            .start();
+        let class_token = cursor.expect(
+            TokenKind::Keyword((Keyword::Class, false)),
+            "class expression",
+            interner,
+        )?;
+        let class_span_start = class_token.span().start();
+        let start_linear_span = class_token.linear_span();
 
         let strict = cursor.strict();
         cursor.set_strict(true);
@@ -66,7 +65,7 @@ where
         };
         cursor.set_strict(strict);
 
-        let (super_ref, constructor, elements, end) =
+        let (super_ref, constructor, elements, end, end_linear_span) =
             ClassTail::new(name, self.allow_yield, self.allow_await).parse(cursor, interner)?;
 
         Ok(ClassExpressionNode::new(
@@ -74,6 +73,7 @@ where
             super_ref,
             constructor,
             elements.into_boxed_slice(),
+            start_linear_span.union(end_linear_span),
             name.is_some(),
             Span::new(class_span_start, end),
         ))

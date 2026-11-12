@@ -24,7 +24,7 @@ use ast::{
     property::MethodDefinitionKind,
 };
 use boa_ast::{
-    self as ast, Expression, Keyword, Position, Punctuator, Span, Spanned,
+    self as ast, Expression, Keyword, LinearSpan, Position, Punctuator, Span, Spanned,
     expression::Identifier,
     function::{
         self, ClassDeclaration as ClassDeclarationNode, ClassElementName, ClassFieldDefinition,
@@ -75,9 +75,9 @@ where
     type Output = ClassDeclarationNode;
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
-        let span = cursor
-            .expect((Keyword::Class, false), "class declaration", interner)?
-            .span();
+        let class_token = cursor.expect((Keyword::Class, false), "class declaration", interner)?;
+        let span = class_token.span();
+        let start_linear_span = class_token.linear_span();
         let strict = cursor.strict();
         cursor.set_strict(true);
 
@@ -103,7 +103,7 @@ where
         };
         cursor.set_strict(strict);
 
-        let (super_ref, constructor, elements, _end) =
+        let (super_ref, constructor, elements, _end, end_linear_span) =
             ClassTail::new(name, self.allow_yield, self.allow_await).parse(cursor, interner)?;
 
         Ok(ClassDeclarationNode::new(
@@ -111,6 +111,7 @@ where
             super_ref,
             constructor,
             elements.into_boxed_slice(),
+            start_linear_span.union(end_linear_span),
         ))
     }
 }
@@ -153,6 +154,7 @@ where
         Option<FunctionExpression>,
         Vec<function::ClassElement>,
         Position,
+        LinearSpan,
     );
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
@@ -177,21 +179,26 @@ where
         cursor.set_strict(false);
         let token = cursor.peek(0, interner).or_abrupt()?;
         let token_span_end = token.span().end();
+        let token_linear_span = token.linear_span();
         let is_close_block = token.kind() == &TokenKind::Punctuator(Punctuator::CloseBlock);
         cursor.set_strict(strict);
 
         if is_close_block {
             cursor.advance(interner);
-            Ok((super_ref, None, Vec::new(), token_span_end))
+            Ok((
+                super_ref,
+                None,
+                Vec::new(),
+                token_span_end,
+                token_linear_span,
+            ))
         } else {
             let body_start = cursor.peek(0, interner).or_abrupt()?.span().start();
             let (constructor, elements) =
                 ClassBody::new(self.name, self.allow_yield, self.allow_await)
                     .parse(cursor, interner)?;
-            let end = cursor
-                .expect(Punctuator::CloseBlock, "class tail", interner)?
-                .span()
-                .start();
+            let close_block = cursor.expect(Punctuator::CloseBlock, "class tail", interner)?;
+            let end = close_block.span().start();
 
             if super_ref.is_none()
                 && let Some(constructor) = &constructor
@@ -203,7 +210,13 @@ where
                 )));
             }
 
-            Ok((super_ref, constructor, elements, end))
+            Ok((
+                super_ref,
+                constructor,
+                elements,
+                end,
+                close_block.linear_span(),
+            ))
         }
     }
 }

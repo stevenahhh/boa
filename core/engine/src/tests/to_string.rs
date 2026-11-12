@@ -443,6 +443,60 @@ fn test_static_to_string() {
     assert_helper(&code, expected);
 }
 
+#[test]
+fn test_class_to_string() {
+    let declaration = "class Rectangle extends Object {
+        constructor(height, width) {
+            super();
+            this.height = height;
+        }
+        static #count = 0;
+        get area() { return this.height; }
+    }";
+    let anonymous = "class   {   }";
+    let named = "class Named extends (0, Object) { m() { return \"\u{1F600}\"; } }";
+    let in_eval = "class InEval { x = 1; }";
+
+    let code = format!(
+        "
+        {declaration}
+        const named = {named};
+        function make() {{ return {anonymous}; }}
+        const ret = {{
+            declaration: Rectangle.toString(),
+            anonymous: make().toString(),
+            named: named.toString(),
+            in_eval: eval(`({in_eval})`).toString(),
+            area: Object.getOwnPropertyDescriptor(Rectangle.prototype, 'area').get.toString(),
+            polymer: String(/\\bclass\\b/.test(class {{}}.toString())),
+            native: [Object, (class Bound {{}}).bind(null)].map(String).join(' | '),
+        }};
+        ret"
+    );
+
+    #[derive(Debug, TryFromJs, PartialEq, Eq)]
+    struct Expected {
+        declaration: String,
+        anonymous: String,
+        named: String,
+        in_eval: String,
+        area: String,
+        polymer: String,
+        native: String,
+    }
+    let expected = Expected {
+        declaration: declaration.into(),
+        anonymous: anonymous.into(),
+        named: named.into(),
+        in_eval: in_eval.into(),
+        area: "get area() { return this.height; }".into(),
+        polymer: "true".into(),
+        native: "function Object() { [native code] } | function () { [native code] }".into(),
+    };
+
+    assert_helper(&code, expected);
+}
+
 #[derive(Debug, TryFromJs, PartialEq, Eq)]
 struct ExpectedOne {
     a: String,
