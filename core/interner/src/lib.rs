@@ -255,6 +255,8 @@ pub struct Interner {
     utf16_interner: RawInterner<u16>,
     /// Latin1-encodability cache for dynamically-interned strings (all code units ≤ 0xFF).
     latin1_flags: Vec<bool>,
+    /// The `JsString` of each symbol that was asked for one, so every use shares one allocation.
+    js_strings: core::cell::RefCell<Vec<Option<boa_string::JsString>>>,
 }
 
 impl Interner {
@@ -293,7 +295,28 @@ impl Interner {
             utf8_interner: RawInterner::with_capacity(capacity),
             utf16_interner: RawInterner::with_capacity(capacity),
             latin1_flags: Vec::with_capacity(capacity),
+            js_strings: core::cell::RefCell::default(),
         }
+    }
+
+    /// The `JsString` of `symbol`: built by `make` the first time it is asked for,
+    /// then shared. Strings are immutable, so sharing one allocation is not observable.
+    pub fn js_string(
+        &self,
+        symbol: Sym,
+        make: impl FnOnce() -> boa_string::JsString,
+    ) -> boa_string::JsString {
+        let index = symbol.get();
+        if let Some(Some(s)) = self.js_strings.borrow().get(index) {
+            return s.clone();
+        }
+        let s = make();
+        let mut cache = self.js_strings.borrow_mut();
+        if cache.len() <= index {
+            cache.resize(index + 1, None);
+        }
+        cache[index] = Some(s.clone());
+        s
     }
 
     /// Returns the number of strings interned by the interner.

@@ -97,13 +97,15 @@ pub(crate) trait ToJsString {
 impl ToJsString for Sym {
     #[allow(clippy::cast_possible_truncation)]
     fn to_js_string(&self, interner: &Interner) -> JsString {
-        let utf16 = interner.resolve_expect(*self).utf16();
-        if interner.is_latin1(*self) {
-            let bytes: Vec<u8> = utf16.iter().map(|&c| c as u8).collect();
-            js_string!(JsStr::latin1(&bytes))
-        } else {
-            js_string!(utf16)
-        }
+        interner.js_string(*self, || {
+            let utf16 = interner.resolve_expect(*self).utf16();
+            if interner.is_latin1(*self) {
+                let bytes: Vec<u8> = utf16.iter().map(|&c| c as u8).collect();
+                js_string!(JsStr::latin1(&bytes))
+            } else {
+                js_string!(utf16)
+            }
+        })
     }
 }
 

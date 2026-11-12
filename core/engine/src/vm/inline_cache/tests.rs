@@ -1038,3 +1038,24 @@ fn a_function_that_never_runs_allocates_no_cache_entries() -> JsResult<()> {
 
     Ok(())
 }
+
+#[test]
+fn access_sites_compiled_apart_share_the_string_of_their_name() -> JsResult<()> {
+    let context = &mut Context::default();
+    let f = context.eval(Source::from_bytes(
+        "(function (o) { return o.sharedName; })",
+    ))?;
+    let (_, f) = get_codeblock(&f).unwrap();
+    let before = f.ic[0].name.refcount();
+
+    let g = context.eval(Source::from_bytes(
+        "(function (o) { return o.sharedName; })",
+    ))?;
+    let (_, g) = get_codeblock(&g).unwrap();
+
+    assert_eq!(f.ic[0].name, g.ic[0].name);
+    assert!(before.is_some());
+    assert!(f.ic[0].name.refcount() > before);
+
+    Ok(())
+}

@@ -15,6 +15,7 @@ serde = ["dep:serde"]
 arbitrary = ["dep:arbitrary"]
 
 [dependencies]
+boa_string.workspace = true
 boa_macros.workspace = true
 boa_gc.workspace = true
 phf = { workspace = true, default-features = false, features = ["macros"] }

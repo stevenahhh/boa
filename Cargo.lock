@@ -520,6 +520,7 @@ dependencies = [
  "arbitrary",
  "boa_gc",
  "boa_macros",
+ "boa_string",
  "hashbrown 0.17.1",
  "indexmap",
  "once_cell",
