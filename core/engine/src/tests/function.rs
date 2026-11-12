@@ -375,3 +375,68 @@ fn arrow_functions_nested_in_arrow_functions_see_the_this_of_the_enclosing_funct
         TestAction::assert("asyncResult === true && executorResult === true"),
     ]);
 }
+
+#[test]
+fn direct_eval_in_arrow_functions_sees_the_enclosing_function() {
+    run_test_actions([
+        TestAction::assert_eq(
+            "(function (a, b) { return eval('arguments.length'); })(1, 2)",
+            2,
+        ),
+        TestAction::assert_eq(
+            "(function (a, b) { return (() => eval('arguments.length'))(); })(1, 2)",
+            2,
+        ),
+        TestAction::assert_eq(
+            "(function (a, b) { return (() => () => eval('arguments.length'))()(); })(1, 2, 3)",
+            3,
+        ),
+        TestAction::assert_eq(
+            "(function () { return (() => () => () => eval('arguments[3]'))()()(); })(1, 2, 3, 'four')",
+            js_str!("four"),
+        ),
+        // A sloppy function maps its parameters to the arguments object, a strict one does not.
+        TestAction::assert_eq(
+            "(function (a) { (() => eval('arguments[0] = 5'))(); return a; })(1)",
+            5,
+        ),
+        TestAction::assert_eq(
+            "(function (a) { 'use strict'; return (() => eval('arguments[0] = 5; a'))(); })(1)",
+            1,
+        ),
+        TestAction::assert_eq(
+            "(function (arguments) { return (() => eval('arguments'))(); })(7)",
+            7,
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                function e7() {
+                    return (() => { var q = 1; if (q) { q++; } return eval('this.tag + arguments.length + q'); })();
+                }
+                e7.call({ tag: 'T' }, 1, 2)
+            "#},
+            js_str!("T22"),
+        ),
+        TestAction::assert_eq("(() => eval('typeof arguments'))()", js_str!("undefined")),
+        TestAction::assert_eq(
+            "new (function () { this.v = (() => () => () => eval('typeof new.target'))()()(); })().v",
+            js_str!("function"),
+        ),
+        TestAction::assert_eq(
+            "(function () { return (() => () => () => eval('this.k'))()()(); }).call({ k: 9 })",
+            9,
+        ),
+        TestAction::assert_eq(
+            "({ __proto__: { x: 'px' }, m() { return (() => () => () => eval('super.x'))()()(); } }).m()",
+            js_str!("px"),
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                class B { get x() { return 'bx'; } }
+                class C extends B { m() { return (() => () => eval('super.x'))()(); } }
+                new C().m()
+            "#},
+            js_str!("bx"),
+        ),
+    ]);
+}

@@ -9,7 +9,7 @@ use crate::operations::annex_b_function_declarations_names;
 use crate::{
     Declaration, Module, Script, StatementListItem, ToJsString,
     declaration::{Binding, ExportDeclaration, LexicalDeclaration, VariableList},
-    expression::{Identifier, literal::ObjectMethodDefinition},
+    expression::{Call, Expression, Identifier, literal::ObjectMethodDefinition},
     function::{
         ArrowFunction, AsyncArrowFunction, AsyncFunctionDeclaration, AsyncFunctionExpression,
         AsyncGeneratorDeclaration, AsyncGeneratorExpression, ClassDeclaration, ClassElement,
@@ -27,7 +27,7 @@ use crate::{
         Block, Catch, ForInLoop, ForLoop, ForOfLoop, Switch, With,
         iteration::{ForLoopInitializer, IterableLoopInitializer},
     },
-    visitor::{NodeRef, NodeRefMut, VisitorMut},
+    visitor::{NodeRef, NodeRefMut, VisitWith, VisitorMut},
 };
 use boa_interner::{Interner, Sym};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -101,6 +101,18 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
         self.scope
             .access_binding(&name, self.direct_eval || self.with);
         ControlFlow::Continue(())
+    }
+
+    fn visit_call_mut(&mut self, node: &'ast mut Call) -> ControlFlow<Self::BreakTy> {
+        // The code of a direct eval can read `arguments`, of the function or, in an arrow
+        // function, of the function around it, which the analysis does not see as a reference.
+        if let Expression::Identifier(ident) = node.function().flatten()
+            && ident.sym() == Sym::EVAL
+        {
+            let arguments = Sym::ARGUMENTS.to_js_string(self.interner);
+            self.scope.access_binding(&arguments, true);
+        }
+        node.visit_with_mut(self)
     }
 
     fn visit_block_mut(&mut self, node: &'ast mut Block) -> ControlFlow<Self::BreakTy> {
