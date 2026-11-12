@@ -234,6 +234,27 @@ impl PromiseCapability {
             resolve: JsValue,
         }
 
+        let promise_constructor = context.intrinsics().constructors().promise();
+        if JsObject::equals(c, &promise_constructor.constructor()) {
+            // With the realm's own %Promise% as C, the steps below run no user code and cannot
+            // fail: `Construct(C, « executor »)` reads the non-writable, non-configurable
+            // `C.prototype`, creates the promise and its resolving functions in this realm and
+            // calls the built-in executor, which stores them. Doing that directly skips creating
+            // the executor.
+            // The checks of the calls to C and the executor.
+            context.check_runtime_limits()?;
+            let promise = JsObject::from_proto_and_data_with_shared_shape(
+                context.root_shape(),
+                promise_constructor.prototype(),
+                Promise::new(),
+            );
+            let functions = Promise::create_resolving_functions(&promise, context);
+            return Ok(Self {
+                promise: promise.upcast(),
+                functions,
+            });
+        }
+
         // 1. If IsConstructor(C) is false, throw a TypeError exception.
         if !c.is_constructor() {
             return Err(JsNativeError::typ()
