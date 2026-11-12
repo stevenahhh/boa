@@ -5,26 +5,100 @@ use crate::{
 use boa_ast::{
     Expression,
     expression::operator::{
-        Binary, BinaryInPrivate,
+        Assign, Binary, BinaryInPrivate, Update,
         binary::{ArithmeticOp, BinaryOp, BitwiseOp, LogicalOp, RelationalOp},
     },
+    function::{
+        ArrowFunction, AsyncArrowFunction, AsyncFunctionExpression, AsyncGeneratorExpression,
+        FunctionExpression, GeneratorExpression,
+    },
+    visitor::Visitor,
 };
+use std::ops::ControlFlow;
+
+/// Returns `true` if evaluating `expr` can assign a binding: it contains an assignment or an
+/// update expression outside of a nested function body.
+///
+/// Code in a nested function cannot write a local binding, because a binding referenced from a
+/// nested function is no longer local and lives in an environment instead of a register.
+fn may_assign_binding(expr: &Expression) -> bool {
+    struct AssignFinder;
+
+    impl<'ast> Visitor<'ast> for AssignFinder {
+        type BreakTy = ();
+
+        fn visit_assign(&mut self, _: &'ast Assign) -> ControlFlow<()> {
+            ControlFlow::Break(())
+        }
+        fn visit_update(&mut self, _: &'ast Update) -> ControlFlow<()> {
+            ControlFlow::Break(())
+        }
+        fn visit_function_expression(&mut self, _: &'ast FunctionExpression) -> ControlFlow<()> {
+            ControlFlow::Continue(())
+        }
+        fn visit_generator_expression(&mut self, _: &'ast GeneratorExpression) -> ControlFlow<()> {
+            ControlFlow::Continue(())
+        }
+        fn visit_async_function_expression(
+            &mut self,
+            _: &'ast AsyncFunctionExpression,
+        ) -> ControlFlow<()> {
+            ControlFlow::Continue(())
+        }
+        fn visit_async_generator_expression(
+            &mut self,
+            _: &'ast AsyncGeneratorExpression,
+        ) -> ControlFlow<()> {
+            ControlFlow::Continue(())
+        }
+        fn visit_arrow_function(&mut self, _: &'ast ArrowFunction) -> ControlFlow<()> {
+            ControlFlow::Continue(())
+        }
+        fn visit_async_arrow_function(&mut self, _: &'ast AsyncArrowFunction) -> ControlFlow<()> {
+            ControlFlow::Continue(())
+        }
+    }
+
+    AssignFinder.visit_expression(expr).is_break()
+}
 
 impl ByteCompiler<'_> {
+    /// Compiles the left operand of `lhs <op> rhs` like
+    /// [`compile_expr_operand`](Self::compile_expr_operand).
+    ///
+    /// A local's register is used directly only when `rhs` cannot assign a binding. Otherwise the
+    /// value is copied first, so that evaluating `rhs` cannot change the left operand after it
+    /// was evaluated (`let a = 1; a + (a = 2, 0)` is `1`).
+    pub(crate) fn compile_lhs_operand(
+        &mut self,
+        lhs: &Expression,
+        rhs: &Expression,
+        inner_fn: impl FnOnce(&mut Self, RegisterOperand),
+    ) {
+        if matches!(lhs, Expression::Identifier(_)) && may_assign_binding(rhs) {
+            let reg = self.register_allocator.alloc();
+            self.compile_expr(lhs, &reg);
+            inner_fn(self, reg.variable());
+            self.register_allocator.dealloc(reg);
+        } else {
+            self.compile_expr_operand(lhs, inner_fn);
+        }
+    }
+
     pub(crate) fn compile_binary(&mut self, binary: &Binary, dst: &Register) {
         match binary.op() {
             BinaryOp::Arithmetic(op) => {
-                self.compile_expr_operand(binary.lhs(), |self_, lhs| {
+                self.compile_lhs_operand(binary.lhs(), binary.rhs(), |self_, lhs| {
                     self_.compile_binary_arithmetic(op, binary.rhs(), dst, lhs);
                 });
             }
             BinaryOp::Bitwise(op) => {
-                self.compile_expr_operand(binary.lhs(), |self_, lhs| {
+                self.compile_lhs_operand(binary.lhs(), binary.rhs(), |self_, lhs| {
                     self_.compile_binary_bitwise(op, binary.rhs(), dst, lhs);
                 });
             }
             BinaryOp::Relational(op) => {
-                self.compile_expr_operand(binary.lhs(), |self_, lhs| {
+                self.compile_lhs_operand(binary.lhs(), binary.rhs(), |self_, lhs| {
                     self_.compile_binary_relational(op, binary.rhs(), dst, lhs);
                 });
             }

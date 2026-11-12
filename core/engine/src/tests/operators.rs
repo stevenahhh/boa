@@ -950,3 +950,80 @@ fn instanceof_custom_has_instance() {
         "#}),
     ]);
 }
+
+// https://github.com/boa-dev/boa/issues/5456
+//
+// The left operand must be read before the right operand runs, even when it is a local binding
+// whose register could be used directly. Each body runs inside a function so that its bindings
+// are locals. The expected values come from Node.js.
+#[test]
+fn left_operand_is_read_before_the_right_operand_runs() {
+    const CASES: &[(&str, &str)] = &[
+        ("let a=1; return a + (a=2, 0);", "1"),
+        ("let a=1; return a * (a=5, 2);", "2"),
+        ("let a='x'; return a + (a='y','z');", "xz"),
+        ("let a=1; return a - a++;", "0"),
+        ("let a=1; return a | (a=6, 0);", "1"),
+        ("let a=1; return a << (a=3, 1);", "2"),
+        ("let a=1; return a < (a=5, 2);", "true"),
+        ("let a=1; return a === (a=2, 2);", "false"),
+        (
+            "let a=1; if (a < (a=5, 2)) return 'yes'; return 'no';",
+            "yes",
+        ),
+        (
+            "let n=0; for (let i=0; i < (i+=2, 2); i++) n++; return n;",
+            "1",
+        ),
+        ("let a=1; return a && (a=0, a);", "0"),
+        ("let a=0; return (a || (a=2, 3)) + a;", "5"),
+        ("let a=null; return (a ?? (a=2, 3)) + a;", "5"),
+        ("let a=[10,20]; return a[(a=[30,40], 1)];", "20"),
+        (
+            "let a={f(){return 1}}; return a.f((a={f(){return 2}}, 0));",
+            "1",
+        ),
+        (
+            "function f(x,y){return x*10+y} let a=1; return f(a, a=2);",
+            "12",
+        ),
+        (
+            "function f(x,y){return x*10+y} let a=1; return f(a, ...[a=2]);",
+            "12",
+        ),
+        ("let a=1; return `${a}${a=2}`;", "12"),
+        ("let a=1; return [a, a=2].join();", "1,2"),
+        ("let a=1; return [a, ...[a=2]].join();", "1,2"),
+        ("let a=1; let o={x:a, y:(a=2)}; return o.x*10+o.y;", "12"),
+        ("let a=1; a += (a=2); return a;", "3"),
+        ("let a=3; a *= (a=2, 5); return a;", "15"),
+        ("let a=0; a ||= (a=7, 8); return a;", "8"),
+        ("let a=1; let b = a++ + a; return b*10+a;", "32"),
+        ("let a=1; let b = a + ++a; return b*10+a;", "32"),
+        ("let a=1; return a + (a++, 0);", "1"),
+        ("let a=1, b=2; return a + (b + (a=10, b=20, 0));", "3"),
+        ("let a=1, b=2; return a + b;", "3"),
+        ("let a=1; return a + ([a] = [5], 0);", "1"),
+        ("let a=2; return a ** (a=3, 2);", "4"),
+        ("let a=1; return a + eval('a=2, 0');", "1"),
+        (
+            "let a=1; return a + (class { static [(a=2, 'k')] = 0; }, 0);",
+            "1",
+        ),
+        (
+            "let a=1; const set = () => { a = 2; return 0; }; return a + set();",
+            "1",
+        ),
+        (
+            "const k=1; let n=0; for (let i=0; k + (i=5, 0) > i; i++) n++; return n;",
+            "0",
+        ),
+        ("let a=1; return a + (class { static { a = 2; } }, 0);", "1"),
+    ];
+    run_test_actions(CASES.iter().map(|&(body, expected)| {
+        TestAction::assert_eq(
+            format!("String((function () {{ {body} }})())"),
+            crate::js_string!(expected),
+        )
+    }));
+}
