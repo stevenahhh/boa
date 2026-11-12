@@ -293,6 +293,40 @@ impl BuiltInConstructor for Array {
 }
 
 impl Array {
+    /// Searches the elements `k..len` of `o` held in the dense element storage of an `Array`
+    /// for the first one matching `matches`, returning its index, or else the first index past
+    /// the searched ones (`k` itself when `o` has no dense storage).
+    fn dense_find(
+        o: &JsObject,
+        k: i64,
+        len: i64,
+        matches: impl Fn(&JsValue) -> bool,
+    ) -> Result<i64, i64> {
+        if !o.is_array() {
+            return Err(k);
+        }
+        let object = o.borrow();
+        let properties = object.properties();
+        let Some(dense_len) = properties.dense_indexed_properties_len() else {
+            return Err(k);
+        };
+        let end = len.min(i64::from(dense_len));
+        let mut index = k;
+        while index < end {
+            let element = u32::try_from(index)
+                .ok()
+                .and_then(|index| properties.get_dense_property(index));
+            let Some(element) = element else {
+                return Err(index);
+            };
+            if matches(&element) {
+                return Ok(index);
+            }
+            index += 1;
+        }
+        Err(index)
+    }
+
     /// Gets element `k` of `o` if `o` is an `Array` that holds it in its dense element storage.
     ///
     /// Such an element is an own data property, so `HasProperty(o, k)` is `true` and `Get(o, k)`
@@ -1525,6 +1559,13 @@ impl Array {
 
         let search_element = args.get_or_undefined(0);
 
+        // The dense elements of an `Array` are scanned in one go, since comparing them runs no
+        // user code; the loop goes on with the first index past them.
+        match Self::dense_find(&o, k, len, |element| search_element.strict_equals(element)) {
+            Ok(index) => return Ok(JsValue::new(index)),
+            Err(next) => k = next,
+        }
+
         // 10. Repeat, while k < len,
         while k < len {
             // a. Let kPresent be ? HasProperty(O, ! ToString(𝔽(k))).
@@ -2103,6 +2144,15 @@ impl Array {
         }
 
         let search_element = args.get_or_undefined(0);
+
+        // The dense elements of an `Array` are scanned in one go, since comparing them runs no
+        // user code; the loop goes on with the first index past them.
+        match Self::dense_find(&o, k, len, |element| {
+            JsValue::same_value_zero(search_element, element)
+        }) {
+            Ok(_) => return Ok(JsValue::new(true)),
+            Err(next) => k = next,
+        }
 
         // 10. Repeat, while k < len,
         while k < len {
