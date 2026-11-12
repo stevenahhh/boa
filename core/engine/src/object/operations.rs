@@ -437,6 +437,7 @@ impl JsObject {
         // NOTE(HalidOdat): For object's that are not callable we implement a special __call__ internal method
         //                  that throws on call.
 
+        let stack_mark = context.vm.stack.mark();
         context.vm.stack.push(this.clone()); // this
         context.vm.stack.push(self.clone()); // func
         let argument_count = args.len();
@@ -444,7 +445,12 @@ impl JsObject {
 
         // 3. Return ? F.[[Call]](V, argumentsList).
         let frame_index = context.vm.frames.len();
-        if self.__call__(argument_count).resolve(context)? {
+        let completed = self.__call__(argument_count).resolve(context);
+        if completed.is_err() && context.vm.frames.len() == frame_index {
+            // A call that fails before it pushes a frame leaves its values on the stack.
+            context.vm.stack.truncate_to_mark(stack_mark);
+        }
+        if completed? {
             return Ok(context.vm.stack.pop());
         }
 
@@ -486,6 +492,7 @@ impl JsObject {
         // 1. If newTarget is not present, set newTarget to F.
         let new_target = new_target.unwrap_or(self);
 
+        let stack_mark = context.vm.stack.mark();
         context.vm.stack.push(JsValue::undefined());
         context.vm.stack.push(self.clone()); // func
         let argument_count = args.len();
@@ -496,7 +503,12 @@ impl JsObject {
         // 3. Return ? F.[[Construct]](argumentsList, newTarget).
         let frame_index = context.vm.frames.len();
 
-        if self.__construct__(argument_count).resolve(context)? {
+        let completed = self.__construct__(argument_count).resolve(context);
+        if completed.is_err() && context.vm.frames.len() == frame_index {
+            // A construction that fails before it pushes a frame leaves its values on the stack.
+            context.vm.stack.truncate_to_mark(stack_mark);
+        }
+        if completed? {
             let result = context.vm.stack.pop();
             return Ok(result
                 .as_object()

@@ -1,4 +1,5 @@
-use crate::{JsNativeErrorKind, TestAction, run_test_actions};
+use crate::{Context, JsNativeErrorKind, JsValue, TestAction, run_test_actions};
+use boa_parser::Source;
 use indoc::indoc;
 
 #[test]
@@ -37,4 +38,34 @@ fn object_properties_return_order() {
             r#"arrayEquals(Object.values(o), [ "iv0", "iv1", "iv2", "v2", "v4", "v1" ])"#,
         ),
     ]);
+}
+
+#[test]
+fn calls_that_fail_before_their_frame_leave_the_stack_as_it_was() {
+    let context = &mut Context::default();
+    let class = context
+        .eval(Source::from_bytes("(class {})"))
+        .expect("a class")
+        .as_object()
+        .expect("an object")
+        .clone();
+    let function = context
+        .eval(Source::from_bytes("(function () {})"))
+        .expect("a function")
+        .as_object()
+        .expect("an object")
+        .clone();
+    let mark = context.vm.stack.mark();
+
+    let arguments = [JsValue::new(1), JsValue::new(2)];
+    assert!(
+        class
+            .call(&JsValue::undefined(), &arguments, context)
+            .is_err()
+    );
+    assert_eq!(context.vm.stack.mark(), mark);
+
+    context.runtime_limits_mut().set_recursion_limit(0);
+    assert!(function.construct(&arguments, None, context).is_err());
+    assert_eq!(context.vm.stack.mark(), mark);
 }

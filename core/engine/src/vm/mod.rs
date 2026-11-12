@@ -146,6 +146,17 @@ impl Stack {
         self.stack[frame.rp as usize + index] = value;
     }
 
+    /// Returns how many values are on the stack, to drop the ones pushed after it with
+    /// [`Stack::truncate_to_mark`].
+    pub(crate) fn mark(&self) -> usize {
+        self.stack.len()
+    }
+
+    /// Drops the values pushed since [`Stack::mark`] returned `mark`.
+    pub(crate) fn truncate_to_mark(&mut self, mark: usize) {
+        self.stack.truncate(mark);
+    }
+
     /// Truncate the stack to the given frame.
     pub(crate) fn truncate_to_frame(&mut self, frame: &CallFrame) {
         self.stack.truncate(frame.frame_pointer());
