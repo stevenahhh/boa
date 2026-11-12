@@ -1213,6 +1213,13 @@ impl BindingCollectorVisitor<'_> {
         self.visit_function_body_mut(body)?;
         std::mem::swap(&mut self.scope, &mut body_scope);
 
+        // An arrow function has no `this` of its own. A `this` in an arrow function nested in this
+        // one marked the scope of this arrow function, the first function scope it met, so the
+        // mark is passed on to the function whose `this` it is.
+        if arrow && function_scope.escaped_this() {
+            function_scope.escape_this_in_enclosing_function_scope();
+        }
+
         *scopes = function_scopes;
 
         self.in_arrow = old_in_arrow;

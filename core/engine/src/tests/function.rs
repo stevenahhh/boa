@@ -324,3 +324,54 @@ fn function_constructor_nested_lexical_binding() {
         42,
     )]);
 }
+
+#[test]
+fn arrow_functions_nested_in_arrow_functions_see_the_this_of_the_enclosing_function() {
+    run_test_actions([
+        TestAction::run(indoc! {r#"
+            class A {
+                depth2() { const outer = () => { const inner = () => this; return inner(); }; return outer(); }
+                depth3() { return (() => () => () => this)()()(); }
+                depth4() { return (() => () => () => () => this)()()()(); }
+                later() { return () => () => this; }
+                get getter() { return (() => () => this)()(); }
+                static staticMethod() { return (() => () => this)()(); }
+                callback() { return [1].map(() => { const t = () => this; return t(); })[0]; }
+                async asyncArrows() { const outer = async () => { const inner = async () => this; return inner(); }; return outer(); }
+                executor() { return new Promise((resolve) => { const t = () => this; resolve(t()); }); }
+                field = () => { const g = () => this; return g(); };
+                static { A.fromStaticBlock = (() => () => this)()(); }
+            }
+            class B extends A {
+                constructor() {
+                    const early = () => () => this;
+                    super();
+                    this.afterSuper = (() => () => this)()();
+                    this.early = early()();
+                }
+            }
+            const a = new A();
+            const b = new B();
+            const object = { m() { return (() => () => this)()(); } };
+            function plain() { return (() => () => this)()(); }
+            let asyncResult = "pending";
+            let executorResult = "pending";
+            a.asyncArrows().then((v) => { asyncResult = v === a; });
+            a.executor().then((v) => { executorResult = v === a; });
+        "#}),
+        TestAction::assert("a.depth2() === a"),
+        TestAction::assert("a.depth3() === a"),
+        TestAction::assert("a.depth4() === a"),
+        TestAction::assert("a.later()()() === a"),
+        TestAction::assert("a.getter === a"),
+        TestAction::assert("A.staticMethod() === A"),
+        TestAction::assert("a.callback() === a"),
+        TestAction::assert("a.field() === a"),
+        TestAction::assert("A.fromStaticBlock === A"),
+        TestAction::assert("b.afterSuper === b && b.early === b"),
+        TestAction::assert("object.m() === object"),
+        TestAction::assert("plain.call(object) === object"),
+        TestAction::inspect_context(|ctx| ctx.run_jobs().unwrap()),
+        TestAction::assert("asyncResult === true && executorResult === true"),
+    ]);
+}
