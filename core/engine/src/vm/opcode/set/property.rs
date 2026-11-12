@@ -3,9 +3,15 @@ use crate::JsValue;
 use crate::value::JsVariant;
 use crate::vm::opcode::{IndexOperand, RegisterOperand};
 use crate::{
-    Context, JsNativeError, JsResult,
-    builtins::function::set_function_name,
-    object::{internal_methods::InternalMethodPropertyContext, shape::slot::SlotAttributes},
+    Context, JsNativeError, JsObject, JsResult,
+    builtins::{array::ARRAY_EXOTIC_INTERNAL_METHODS, function::set_function_name},
+    object::{
+        internal_methods::{
+            InternalMethodPropertyContext,
+            immutable_prototype::IMMUTABLE_PROTOTYPE_EXOTIC_INTERNAL_METHODS,
+        },
+        shape::slot::SlotAttributes,
+    },
     property::{PropertyDescriptor, PropertyKey},
     vm::opcode::Operation,
 };
@@ -180,6 +186,18 @@ impl SetPropertyByValue {
                 {
                     return Ok(());
                 }
+                let is_append = object_borrowed.properties().dense_indexed_properties_len()
+                    == Some(index.get());
+                drop(object_borrowed);
+
+                if is_append
+                    && receiver
+                        .as_object()
+                        .is_some_and(|receiver| JsObject::equals(&receiver, &object))
+                    && append_dense_array_element(&object, index.get(), &value, context)
+                {
+                    return Ok(());
+                }
             }
         }
 
@@ -198,6 +216,76 @@ impl SetPropertyByValue {
 
         Ok(())
     }
+}
+
+/// Appends `value` as the element `index` of a dense array when `OrdinarySet` would do exactly that.
+///
+/// `OrdinarySet(array, index, value, array)` for an index the array does not own asks each object
+/// on the prototype chain for `index`. When none of them has it, it ends in
+/// `CreateDataProperty(array, index, value)`, which adds a writable, enumerable and configurable
+/// element and, for an index at or past `length`, sets `length` to `index + 1`.
+///
+/// The shortcut is only taken when no step of that path can run user code or fail:
+/// - the array has the realm's array template shape, so `length` is its only named property and
+///   is writable, and its prototype is the realm's `%Array.prototype%`;
+/// - the array is extensible and `index` is the length of its dense element storage, so the array
+///   does not own `index` and adding it leaves no hole;
+/// - each object on the prototype chain is an array or the immutable prototype
+///   `%Object.prototype%`, whose `[[GetOwnProperty]]`, `[[GetPrototypeOf]]` and `[[Set]]` are the
+///   ordinary ones, and owns no indexed property.
+fn append_dense_array_element(
+    array: &JsObject,
+    index: u32,
+    value: &JsValue,
+    context: &Context,
+) -> bool {
+    let (old_len, mut prototype) = {
+        let array = array.borrow();
+        let properties = array.properties();
+        if !array.extensible
+            || properties.shape.to_addr_usize()
+                != context
+                    .intrinsics()
+                    .templates()
+                    .array()
+                    .shape()
+                    .to_addr_usize()
+            || properties.dense_indexed_properties_len() != Some(index)
+        {
+            return false;
+        }
+        let Some(old_len) = properties.storage[0].as_i32() else {
+            return false;
+        };
+        (old_len, array.prototype())
+    };
+
+    while let Some(object) = prototype {
+        let vtable = object.vtable();
+        if !std::ptr::eq(vtable, &raw const ARRAY_EXOTIC_INTERNAL_METHODS)
+            && !std::ptr::eq(
+                vtable,
+                &raw const IMMUTABLE_PROTOTYPE_EXOTIC_INTERNAL_METHODS,
+            )
+        {
+            return false;
+        }
+        let object = object.borrow();
+        if object.properties().index_property_keys().next().is_some() {
+            return false;
+        }
+        prototype = object.prototype();
+    }
+
+    let mut array = array.borrow_mut();
+    let properties = array.properties_mut();
+    if !properties.indexed_properties.push_dense(value) {
+        return false;
+    }
+    if i64::from(index) >= i64::from(old_len) {
+        properties.storage[0] = JsValue::new(index + 1);
+    }
+    true
 }
 
 impl Operation for SetPropertyByValue {

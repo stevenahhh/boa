@@ -371,6 +371,10 @@ impl IndexedProperties {
     /// the storage is sparse and the caller should fall back to the slow path.
     ///
     /// Handles type transitions: `DenseI32` → `DenseF64` → `DenseElement`.
+    // Inlined into both array-literal pushes and index appends: an outlined call costs array
+    // literals about 1% of instructions on the splay benchmark.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
     pub(crate) fn push_dense(&mut self, value: &JsValue) -> bool {
         match self {
             Self::DenseI32(vec) => {
@@ -802,6 +806,19 @@ impl PropertyMap {
             }
             IndexedProperties::SparseProperty(_) | IndexedProperties::SparseElement(_) => false,
         }
+    }
+
+    /// Returns the number of elements of dense indexed properties, or `None` if they are sparse.
+    pub(crate) fn dense_indexed_properties_len(&self) -> Option<u32> {
+        let len = match &self.indexed_properties {
+            IndexedProperties::DenseI32(properties) => properties.len(),
+            IndexedProperties::DenseF64(properties) => properties.len(),
+            IndexedProperties::DenseElement(properties) => properties.len(),
+            IndexedProperties::SparseProperty(_) | IndexedProperties::SparseElement(_) => {
+                return None;
+            }
+        };
+        u32::try_from(len).ok()
     }
 
     /// Returns the vec of dense indexed properties if they exist.

@@ -1009,3 +1009,71 @@ fn array_prototype_find_edge_cases() {
         "#}),
     ]);
 }
+
+#[test]
+fn index_assignment_past_the_end_follows_ordinary_set() {
+    run_test_actions([
+        TestAction::assert_eq(
+            indoc! {r#"
+                let calls = 0;
+                Object.defineProperty(Array.prototype, "2", {
+                    set(v) { calls += v; },
+                    configurable: true,
+                });
+                const a = [0, 1];
+                a[2] = 5;
+                delete Array.prototype[2];
+                `${calls} ${a.length} ${Object.hasOwn(a, 2)}`
+            "#},
+            js_str!("5 2 false"),
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                let objectCalls = 0;
+                Object.defineProperty(Object.prototype, "1", {
+                    set(v) { objectCalls += v; },
+                    configurable: true,
+                });
+                const b = [0];
+                b[1] = 7;
+                delete Object.prototype[1];
+                `${objectCalls} ${b.length} ${Object.hasOwn(b, 1)}`
+            "#},
+            js_str!("7 1 false"),
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                const c = [0];
+                Object.defineProperty(c, "length", { writable: false });
+                c[1] = 1;
+                `${c.length} ${Object.hasOwn(c, 1)}`
+            "#},
+            js_str!("1 false"),
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                const d = [0];
+                Object.preventExtensions(d);
+                d[1] = 1;
+                `${d.length} ${Object.hasOwn(d, 1)}`
+            "#},
+            js_str!("1 false"),
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                const e = new Array(3);
+                e[0] = "x";
+                `${e.length} ${e[0]} ${1 in e}`
+            "#},
+            js_str!("3 x false"),
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                const f = [];
+                for (let i = 0; i < 4; i++) f[i] = i * 1.5;
+                `${f.length} ${f.join()}`
+            "#},
+            js_str!("4 0,1.5,3,4.5"),
+        ),
+    ]);
+}
