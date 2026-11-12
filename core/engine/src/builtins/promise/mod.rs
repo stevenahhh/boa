@@ -1910,6 +1910,24 @@ impl Promise {
             }
         }
 
+        let promise_constructor = context.intrinsics().constructors().promise();
+        if !x.is_object() && JsObject::equals(c, &promise_constructor.constructor()) {
+            // With the realm's own %Promise% as C and a value that is not an object, steps 2 to 4
+            // run no user code and cannot fail: `NewPromiseCapability(C)` creates a pending
+            // promise of this realm with no reactions, and its resolve function fulfills it
+            // with `x`. Doing that directly skips creating the resolving functions.
+            // The checks of the calls to C, the executor and the resolve function.
+            context.check_runtime_limits()?;
+            let mut fulfilled = Self::new();
+            fulfilled.state = PromiseState::Fulfilled(x);
+            let promise = JsObject::from_proto_and_data_with_shared_shape(
+                context.root_shape(),
+                promise_constructor.prototype(),
+                fulfilled,
+            );
+            return Ok(promise.upcast());
+        }
+
         // 2. Let promiseCapability be ? NewPromiseCapability(C).
         let promise_capability = PromiseCapability::new(&c.clone(), context)?;
 

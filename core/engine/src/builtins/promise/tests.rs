@@ -333,3 +333,61 @@ fn capability_for_await_values() {
         TestAction::assert_eq("out.join()", js_str!("1,2,3")),
     ]);
 }
+
+// ── PromiseResolve of a value that is not an object with %Promise% (fast path equivalence) ──
+// Expected values come from node v26.7.0 (the log after the job queue is empty).
+
+#[test]
+fn promise_resolve_resolve_primitive_order() {
+    run_test_actions([
+        TestAction::run(
+            r#"var out = []; Promise.resolve(1).then(v => out.push("a" + v)); Promise.resolve("s").then(v => out.push("b" + v)); Promise.resolve().then(v => out.push("c" + v)); out.push("sync");"#,
+        ),
+        TestAction::inspect_context(|ctx| ctx.run_jobs().unwrap()),
+        TestAction::assert_eq("out.join()", js_str!("sync,a1,bs,cundefined")),
+    ]);
+}
+
+#[test]
+fn promise_resolve_await_primitive_kinds() {
+    run_test_actions([
+        TestAction::run(
+            r#"var out = []; (async () => { out.push(typeof await undefined, typeof await Symbol(), typeof await 1n, await "x", await null); })();"#,
+        ),
+        TestAction::inspect_context(|ctx| ctx.run_jobs().unwrap()),
+        TestAction::assert_eq("out.join()", js_str!("undefined,symbol,bigint,x,")),
+    ]);
+}
+
+#[test]
+fn promise_resolve_resolve_subclass_primitive() {
+    run_test_actions([
+        TestAction::run(
+            r#"var out = []; class S extends Promise {} const p = S.resolve(1); out.push(p instanceof S, Object.getPrototypeOf(p) === S.prototype); p.then(v => out.push("v" + v));"#,
+        ),
+        TestAction::inspect_context(|ctx| ctx.run_jobs().unwrap()),
+        TestAction::assert_eq("out.join()", js_str!("true,true,v1")),
+    ]);
+}
+
+#[test]
+fn promise_resolve_resolve_object_value() {
+    run_test_actions([
+        TestAction::run(
+            r#"var out = []; const o = { then: undefined }; Promise.resolve(o).then(v => out.push(v === o)); Promise.resolve(function () {}).then(v => out.push(typeof v));"#,
+        ),
+        TestAction::inspect_context(|ctx| ctx.run_jobs().unwrap()),
+        TestAction::assert_eq("out.join()", js_str!("true,function")),
+    ]);
+}
+
+#[test]
+fn promise_resolve_resolve_state_inspect() {
+    run_test_actions([
+        TestAction::run(
+            r#"var out = []; const p = Promise.resolve(5); out.push(Object.getPrototypeOf(p) === Promise.prototype, p instanceof Promise); p.then(v => out.push(v)).then(() => out.push("after"));"#,
+        ),
+        TestAction::inspect_context(|ctx| ctx.run_jobs().unwrap()),
+        TestAction::assert_eq("out.join()", js_str!("true,true,5,after")),
+    ]);
+}
