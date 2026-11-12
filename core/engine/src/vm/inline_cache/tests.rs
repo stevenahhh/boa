@@ -1012,3 +1012,29 @@ fn cached_length_assignment_keeps_the_length_logic_of_exotic_objects() {
         ),
     ]);
 }
+
+#[test]
+fn a_function_that_never_runs_allocates_no_cache_entries() -> JsResult<()> {
+    let context = &mut Context::default();
+    let function = context.eval(Source::from_bytes(
+        "(function (o) { o.a = o.b.c; return o.a + o.d(); })",
+    ))?;
+    let (function, code) = get_codeblock(&function).unwrap();
+
+    assert!(!code.ic.is_empty());
+    for ic in &*code.ic {
+        assert_eq!(ic.entries.borrow().capacity(), 0);
+    }
+
+    let o = context.eval(Source::from_bytes(
+        "({ a: 1, b: { c: 2 }, d() { return 3; } })",
+    ))?;
+    let result = function.call(&JsValue::undefined(), &[o], context)?;
+
+    assert_eq!(result.as_number(), Some(5.0));
+    for ic in &*code.ic {
+        assert_eq!(ic.entries.borrow().len(), 1);
+    }
+
+    Ok(())
+}

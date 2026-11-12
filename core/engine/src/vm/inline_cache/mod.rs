@@ -1,9 +1,9 @@
-use arrayvec::ArrayVec;
 use itertools::Itertools;
 use std::{cell::Cell, fmt};
 
 use boa_gc::GcRefCell;
 use boa_macros::{Finalize, Trace};
+use thin_vec::ThinVec;
 
 use crate::{
     JsString,
@@ -69,7 +69,8 @@ pub(crate) struct InlineCache {
     pub(crate) name: JsString,
 
     /// Multiple cached shape-to-slot entries.
-    pub(crate) entries: GcRefCell<ArrayVec<CacheEntry, PIC_CAPACITY>>,
+    /// Allocated when the first entry is cached: most access sites never run.
+    pub(crate) entries: GcRefCell<ThinVec<CacheEntry>>,
 
     /// Whether this access site has seen too many shapes and should no longer be cached.
     #[unsafe_ignore_trace]
@@ -95,7 +96,7 @@ impl InlineCache {
     pub(crate) fn new(name: JsString) -> Self {
         Self {
             name,
-            entries: GcRefCell::new(ArrayVec::new()),
+            entries: GcRefCell::new(ThinVec::new()),
             megamorphic: Cell::new(false),
         }
     }
@@ -140,17 +141,16 @@ impl InlineCache {
         let mut entries = self.entries.borrow_mut();
 
         // Add a new entry if there's space.
-        if entries
-            .try_push(CacheEntry {
+        if entries.len() < PIC_CAPACITY {
+            entries.push(CacheEntry {
                 shape: shape.into(),
                 slot,
                 holder,
-            })
-            .is_err()
-        {
+            });
+        } else {
             // Polymorphic cache is full, transition to megamorphic.
             self.megamorphic.set(true);
-            entries.clear();
+            *entries = ThinVec::new();
         }
     }
 
