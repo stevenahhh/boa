@@ -24,7 +24,7 @@ pub(crate) enum EnumBasedValue {
 
 impl Finalize for EnumBasedValue {
     fn finalize(&self) {
-        if let Some(o) = self.as_object() {
+        if let Self::Object(o) = self {
             o.finalize();
         }
     }

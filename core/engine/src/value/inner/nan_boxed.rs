@@ -346,8 +346,9 @@ impl fmt::Debug for NanBoxedValue {
 
 impl Finalize for NanBoxedValue {
     fn finalize(&self) {
-        if let Some(o) = self.as_object() {
-            o.finalize();
+        if self.is_object() {
+            // SAFETY: The value holds an object, borrowed here as in `trace`.
+            unsafe { self.as_object_unchecked() }.finalize();
         }
     }
 }
