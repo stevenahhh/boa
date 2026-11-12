@@ -313,3 +313,23 @@ fn can_correlate_binding_to_scope() {
     // THEN
     assert_eq!(binding.locator().unique_scope_id(), child1.unique_id());
 }
+
+#[test]
+fn redeclared_bindings_keep_their_index() {
+    let scope = Scope::new(Scope::new_global(), true);
+    let indices: Vec<u32> = ["a", "b", "a", "c", "b", "d"]
+        .into_iter()
+        .map(|name| {
+            scope
+                .create_mutable_binding(JsString::from(name), true)
+                .binding_index()
+        })
+        .collect();
+    assert_eq!(indices, [0, 1, 0, 2, 1, 3]);
+    assert_eq!(scope.num_bindings(), 4);
+    for (name, index) in [("a", 0), ("b", 1), ("c", 2), ("d", 3)] {
+        let binding = scope.get_binding(&JsString::from(name));
+        assert_eq!(binding.map(|b| b.binding_index()), Some(index));
+    }
+    assert!(scope.get_binding(&JsString::from("e")).is_none());
+}
