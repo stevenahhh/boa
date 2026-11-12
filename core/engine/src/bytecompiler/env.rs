@@ -13,6 +13,7 @@ impl ByteCompiler<'_> {
 
         if scope.is_function() {
             self.variable_scope = scope.clone();
+            self.function_scope_bindings = scope.num_bindings_non_local();
         }
 
         self.lexical_scope = scope.clone();

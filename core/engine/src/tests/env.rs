@@ -96,6 +96,91 @@ fn indirect_eval_function_var_binding_4350() {
 }
 
 #[test]
+fn eval_var_exists_only_in_the_activation_that_declared_it() {
+    run_test_actions([
+        // Each activation declares its own variable; the others must not see it.
+        TestAction::assert_eq(
+            indoc! {r#"
+                function e6(n) {
+                    if (n > 0) {
+                        eval('var depth' + n + ' = n');
+                        return e6(n - 1) + (typeof depth2);
+                    }
+                    return '';
+                }
+                e6(3)
+            "#},
+            js_str!("undefinednumberundefined"),
+        ),
+        // A variable declared by an eval in another activation does not shadow an outer binding.
+        TestAction::assert_eq(
+            indoc! {r#"
+                var shadowed = 'global';
+                function f(n) {
+                    if (n === 1) {
+                        eval('var shadowed = "inner"');
+                        return f(0) + ':' + shadowed;
+                    }
+                    eval('');
+                    return shadowed;
+                }
+                f(1)
+            "#},
+            js_str!("global:inner"),
+        ),
+        // A variable declared by an eval is deletable in every activation that declares it.
+        TestAction::assert_eq(
+            indoc! {r#"
+                function g(n) {
+                    if (n === 1) {
+                        eval('var v = 1');
+                        return g(0) + ':' + v;
+                    }
+                    eval('var v = 2');
+                    return delete v;
+                }
+                g(1)
+            "#},
+            js_str!("true:1"),
+        ),
+    ]);
+}
+
+#[test]
+fn direct_eval_sees_the_name_of_a_function_expression() {
+    run_test_actions([
+        TestAction::assert_eq(
+            indoc! {r#"
+                var fe = function shadow() {
+                    var r = eval('typeof shadow');
+                    if (r) { r += '?'; }
+                    return r;
+                };
+                fe()
+            "#},
+            js_str!("function?"),
+        ),
+        TestAction::assert_eq(
+            "var gen = function* named() { yield eval('typeof named'); }; gen().next().value",
+            js_str!("function"),
+        ),
+        TestAction::assert_eq(
+            "var fe2 = function self() { return (() => eval('self'))() === fe2; }; fe2()",
+            true,
+        ),
+        // The name binding is immutable, and a var declared by the eval shadows it.
+        TestAction::assert_eq(
+            "(function named() { eval('named = 1'); return typeof named; })()",
+            js_str!("function"),
+        ),
+        TestAction::assert_eq(
+            "(function named() { eval('var named = 1'); return named; })()",
+            1,
+        ),
+    ]);
+}
+
+#[test]
 // https://github.com/boa-dev/boa/issues/5333
 fn eval_created_bindings_can_be_deleted_5333() {
     run_test_actions([

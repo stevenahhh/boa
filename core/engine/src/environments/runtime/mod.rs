@@ -229,14 +229,16 @@ impl EnvironmentStack {
     }
 
     /// Push a function environment on the environments stack.
+    ///
+    /// `num_bindings` is [`CodeBlock::function_scope_bindings`](crate::vm::CodeBlock) of the
+    /// function: the scope itself can hold more bindings, added by a direct eval in another call.
     pub(crate) fn push_function(
         &mut self,
         scope: Scope,
+        num_bindings: u32,
         function_slots: FunctionSlots,
         global: &Gc<DeclarativeEnvironment>,
     ) {
-        let num_bindings = scope.num_bindings_non_local();
-
         let (poisoned, with) = self.compute_poisoned_with(global);
 
         self.push_env(Environment::Declarative(Gc::new(
@@ -566,7 +568,8 @@ impl Context {
                 Environment::Declarative(env) => {
                     if env.poisoned() {
                         if let Some(env) = env.kind().as_function()
-                            && env.compile().get_binding(locator.name()).is_some()
+                            && let Some(b) = env.compile().get_binding(locator.name())
+                            && !env.is_deleted_binding(b.binding_index())
                         {
                             break;
                         }

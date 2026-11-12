@@ -60,6 +60,11 @@ impl FunctionEnvironment {
         self.bindings.borrow_mut()[index as usize] = Some(value);
     }
 
+    /// Makes room for the bindings that a direct eval added to the function scope.
+    ///
+    /// The scope is shared by all calls of the function, so it also holds the variables that the
+    /// evals of other calls declared. The new bindings therefore start out deleted: the
+    /// `DefEvalVar` and `DefInitVar` instructions of the eval restore the ones it declares.
     pub(crate) fn extend_from_compile(&self) {
         let compile_bindings_len = self.scope.num_bindings() as usize;
         let mut bindings = self.bindings.borrow_mut();
@@ -72,20 +77,21 @@ impl FunctionEnvironment {
         bindings.resize(compile_bindings_len, None);
 
         let mut deletable_bindings = self.deletable_bindings.borrow_mut();
-        deletable_bindings.resize(compile_bindings_len, false);
-        deletable_bindings[bindings_len..].fill(true);
+        deletable_bindings.resize(compile_bindings_len, true);
 
         self.deleted_bindings
             .borrow_mut()
-            .resize(compile_bindings_len, false);
+            .resize(compile_bindings_len, true);
     }
 
+    /// Returns `true` if the binding at `index` does not exist in this environment: it was
+    /// deleted, or it is a variable that a direct eval of another call declared.
     pub(crate) fn is_deleted_binding(&self, index: u32) -> bool {
         self.deleted_bindings
             .borrow()
             .get(index as usize)
             .copied()
-            .unwrap_or_default()
+            .unwrap_or(true)
     }
 
     #[track_caller]

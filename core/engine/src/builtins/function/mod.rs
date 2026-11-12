@@ -1081,11 +1081,13 @@ pub(crate) fn function_call(
     }
 
     if has_function_scope {
-        let scope = context.vm.frame().code_block().constant_scope(last_env);
+        let code = context.vm.frame().code_block();
+        let (scope, num_bindings) = (code.constant_scope(last_env), code.function_scope_bindings);
         let frame = context.vm.frame_mut();
         let global = frame.realm.environment();
         frame.environments.push_function(
             scope,
+            num_bindings,
             FunctionSlots::new(this, function_object.clone(), None),
             global,
         );
@@ -1189,11 +1191,13 @@ fn function_construct(
     }
 
     if has_function_scope {
-        let scope = context.vm.frame().code_block().constant_scope(last_env);
+        let code = context.vm.frame().code_block();
+        let (scope, num_bindings) = (code.constant_scope(last_env), code.function_scope_bindings);
         let frame = context.vm.frame_mut();
         let global = frame.realm.environment();
         frame.environments.push_function(
             scope,
+            num_bindings,
             FunctionSlots::new(
                 this.clone().map_or(ThisBindingStatus::Uninitialized, |o| {
                     ThisBindingStatus::Initialized(o.into())

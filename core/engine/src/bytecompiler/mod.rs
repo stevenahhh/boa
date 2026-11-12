@@ -555,6 +555,10 @@ pub struct ByteCompiler<'ctx> {
     /// Used to determine if a we emitted a `CreateUnmappedArgumentsObject` opcode
     pub(crate) emitted_mapped_arguments_object_opcode: bool,
 
+    /// The number of non-local bindings of the function scope when it was pushed; see
+    /// [`CodeBlock::function_scope_bindings`].
+    function_scope_bindings: u32,
+
     pub(crate) interner: &'ctx mut Interner,
     spanned_source_text: SpannedSourceText,
 
@@ -681,6 +685,7 @@ impl<'ctx> ByteCompiler<'ctx> {
             annex_b_function_names: Vec::new(),
             in_with,
             emitted_mapped_arguments_object_opcode: false,
+            function_scope_bindings: 0,
 
             global_lexs: Vec::new(),
             global_fns: Vec::new(),
@@ -2790,6 +2795,7 @@ impl<'ctx> ByteCompiler<'ctx> {
             global_lexs: self.global_lexs.into_boxed_slice(),
             global_fns: self.global_fns.into_boxed_slice(),
             global_vars: self.global_vars.into_boxed_slice(),
+            function_scope_bindings: self.function_scope_bindings,
             debug_id: CodeBlock::get_next_codeblock_id(),
             #[cfg(feature = "trace")]
             traced: Cell::new(false),

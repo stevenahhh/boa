@@ -166,6 +166,14 @@ pub struct CodeBlock {
     pub(crate) global_fns: Box<[GlobalFunctionBinding]>,
     pub(crate) global_vars: Box<[u32]>,
 
+    /// The number of bindings in the function environment of a call: the non-local bindings of
+    /// the function scope when the code was compiled.
+    ///
+    /// A direct eval adds the variables it declares to the function scope, which all calls share,
+    /// so the scope can have more bindings later. Those exist only in the environments of the
+    /// calls whose eval declared them.
+    pub(crate) function_scope_bindings: u32,
+
     // Used for identifying anonymous functions in compiled output and call frames.
     pub(crate) debug_id: u64,
 
@@ -201,6 +209,7 @@ impl CodeBlock {
             global_lexs: Box::default(),
             global_fns: Box::default(),
             global_vars: Box::default(),
+            function_scope_bindings: 0,
             debug_id: CodeBlock::get_next_codeblock_id(),
             #[cfg(feature = "trace")]
             traced: Cell::new(false),

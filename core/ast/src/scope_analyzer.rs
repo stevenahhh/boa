@@ -318,6 +318,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
         &mut self,
         node: &'ast mut FunctionExpression,
     ) -> ControlFlow<Self::BreakTy> {
+        escape_name_with_direct_eval(node.name_scope.as_ref(), node.contains_direct_eval);
         self.visit_function_like(
             &mut node.parameters,
             &mut node.body,
@@ -330,6 +331,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
         &mut self,
         node: &'ast mut GeneratorExpression,
     ) -> ControlFlow<Self::BreakTy> {
+        escape_name_with_direct_eval(node.name_scope.as_ref(), node.contains_direct_eval);
         self.visit_function_like(
             &mut node.parameters,
             &mut node.body,
@@ -342,6 +344,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
         &mut self,
         node: &'ast mut AsyncFunctionExpression,
     ) -> ControlFlow<Self::BreakTy> {
+        escape_name_with_direct_eval(node.name_scope.as_ref(), node.contains_direct_eval);
         self.visit_function_like(
             &mut node.parameters,
             &mut node.body,
@@ -354,6 +357,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
         &mut self,
         node: &'ast mut AsyncGeneratorExpression,
     ) -> ControlFlow<Self::BreakTy> {
+        escape_name_with_direct_eval(node.name_scope.as_ref(), node.contains_direct_eval);
         self.visit_function_like(
             &mut node.parameters,
             &mut node.body,
@@ -536,6 +540,16 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
         std::mem::swap(&mut self.scope, &mut scope);
         scope.reorder_binding_indices();
         ControlFlow::Continue(())
+    }
+}
+
+/// Gives the name of a function expression an environment when the function contains a direct eval.
+///
+/// Only references the analyzer sees make the name escape, but the code of a direct eval in the
+/// function can refer to the function by its name too.
+fn escape_name_with_direct_eval(name_scope: Option<&Scope>, contains_direct_eval: bool) {
+    if contains_direct_eval && let Some(scope) = name_scope {
+        scope.escape_all_bindings();
     }
 }
 
