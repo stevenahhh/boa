@@ -293,6 +293,18 @@ impl BuiltInConstructor for Array {
 }
 
 impl Array {
+    /// Gets element `k` of `o` if `o` is an `Array` that holds it in its dense element storage.
+    ///
+    /// Such an element is an own data property, so `HasProperty(o, k)` is `true` and `Get(o, k)`
+    /// returns it without running user code; `None` means the caller takes the generic path.
+    fn dense_element<K: TryInto<u32>>(o: &JsObject, k: K) -> Option<JsValue> {
+        if !o.is_array() {
+            return None;
+        }
+        o.borrow()
+            .properties()
+            .get_dense_property(k.try_into().ok()?)
+    }
     /// Optimized helper function, that sets the length of the array.
     fn set_length(o: &JsObject, len: u64, context: &mut Context) -> JsResult<()> {
         if o.is_array() && len < (2u64.pow(32) - 1) {
@@ -962,7 +974,9 @@ impl Array {
             // b. Let kPresent be ? HasProperty(O, Pk).
             // c. If kPresent is true, then
             // c.i. Let kValue be ? Get(O, Pk).
-            if let Some(k_value) = o.try_get(pk, context)? {
+            if let Some(k_value) = Self::dense_element(&o, pk)
+                .map_or_else(|| o.try_get(pk, context), |v| Ok(Some(v)))?
+            {
                 // ii. Perform ? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »).
                 let this_arg = args.get_or_undefined(1);
                 callback.call(this_arg, &[k_value, k.into(), o.clone().into()], context)?;
@@ -1420,7 +1434,9 @@ impl Array {
             // b. Let k_present be ? HasProperty(O, Pk).
             // c. If k_present is true, then
             // c.i. Let kValue be ? Get(O, Pk).
-            if let Some(k_value) = o.try_get(k, context)? {
+            if let Some(k_value) =
+                Self::dense_element(&o, k).map_or_else(|| o.try_get(k, context), |v| Ok(Some(v)))?
+            {
                 // ii. Let mappedValue be ? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »).
                 let mapped_value =
                     callback.call(this_arg, &[k_value, k.into(), o.clone().into()], context)?;
@@ -1494,7 +1510,9 @@ impl Array {
             // a. Let kPresent be ? HasProperty(O, ! ToString(𝔽(k))).
             // b. If kPresent is true, then
             // b.i. Let elementK be ? Get(O, ! ToString(𝔽(k))).
-            if let Some(element_k) = o.try_get(k, context)? {
+            if let Some(element_k) =
+                Self::dense_element(&o, k).map_or_else(|| o.try_get(k, context), |v| Ok(Some(v)))?
+            {
                 // ii. Let same be IsStrictlyEqual(searchElement, elementK).
                 // iii. If same is true, return 𝔽(k).
                 if search_element.strict_equals(&element_k) {
@@ -2069,7 +2087,7 @@ impl Array {
         // 10. Repeat, while k < len,
         while k < len {
             // a. Let elementK be ? Get(O, ! ToString(𝔽(k))).
-            let element_k = o.get(k, context)?;
+            let element_k = Self::dense_element(&o, k).map_or_else(|| o.get(k, context), Ok)?;
             // b. If SameValueZero(searchElement, elementK) is true, return true.
             if JsValue::same_value_zero(search_element, &element_k) {
                 return Ok(JsValue::new(true));
@@ -2557,7 +2575,9 @@ impl Array {
             // b. Let kPresent be ? HasProperty(O, Pk).
             // c. If kPresent is true, then
             // c.i. Let kValue be ? Get(O, Pk).
-            if let Some(element) = o.try_get(idx, context)? {
+            if let Some(element) = Self::dense_element(&o, idx)
+                .map_or_else(|| o.try_get(idx, context), |v| Ok(Some(v)))?
+            {
                 let args = [element.clone(), JsValue::new(idx), JsValue::new(o.clone())];
 
                 // ii. Let selected be ! ToBoolean(? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »)).

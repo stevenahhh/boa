@@ -1133,3 +1133,166 @@ fn index_assignment_through_super_defines_the_property_on_the_receiver() {
         ),
     ]);
 }
+
+// ── Array.prototype methods reading dense elements directly (fast path bail-outs) ──
+// Expected values come from node v26.7.0.
+
+#[test]
+fn dense_method_foreach_mutate() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2, 3, 4]; const s = []; a.forEach((x, i) => { s.push(x); if (i === 0) { a.pop(); a[1] = 20; } }); return s.join(); })())"#,
+        js_str!("1,20,3"),
+    )]);
+}
+
+#[test]
+fn dense_method_foreach_delete_ahead() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2, 3]; const s = []; a.forEach((x) => { s.push(x); delete a[1]; }); return s.join(); })())"#,
+        js_str!("1,3"),
+    )]);
+}
+
+#[test]
+fn dense_method_foreach_holes_proto() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { Array.prototype[1] = "P"; const s = []; [1, , 3].forEach((x) => s.push(x)); delete Array.prototype[1]; return s.join(); })())"#,
+        js_str!("1,P,3"),
+    )]);
+}
+
+#[test]
+fn dense_method_foreach_getter() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2]; Object.defineProperty(a, 0, { get() { return "g"; } }); const s = []; a.forEach((x) => s.push(x)); return s.join(); })())"#,
+        js_str!("g,2"),
+    )]);
+}
+
+#[test]
+fn dense_method_foreach_array_like() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const s = []; Array.prototype.forEach.call({ length: 3, 0: "a", 2: "c", 3: "d" }, (x, i) => s.push(i + x)); return s.join(); })())"#,
+        js_str!("0a,2c"),
+    )]);
+}
+
+#[test]
+fn dense_method_foreach_proxy() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const log = []; const p = new Proxy([5, 6], { get(t, k, r) { log.push(String(k)); return Reflect.get(t, k, r); }, has(t, k) { log.push("has" + String(k)); return Reflect.has(t, k); } }); p.forEach(() => {}); return log.join(); })())"#,
+        js_str!("forEach,length,has0,0,has1,1"),
+    )]);
+}
+
+#[test]
+fn dense_method_map_holes() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const r = [1, , 3].map((x) => x * 2); return r.length + ":" + (1 in r) + ":" + r.join(); })())"#,
+        js_str!("3:false:2,,6"),
+    )]);
+}
+
+#[test]
+fn dense_method_map_mutate() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2, 3]; return a.map((x, i) => { if (i === 0) a[2] = 30; return x; }).join(); })())"#,
+        js_str!("1,2,30"),
+    )]);
+}
+
+#[test]
+fn dense_method_map_subclass() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { class A extends Array {} const r = A.from([1, 2]).map((x) => x + 1); return (r instanceof A) + ":" + r.join(); })())"#,
+        js_str!("true:2,3"),
+    )]);
+}
+
+#[test]
+fn dense_method_filter_mutate() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2, 3, 4]; return a.filter((x, i) => { if (i === 0) a.length = 2; return true; }).join(); })())"#,
+        js_str!("1,2"),
+    )]);
+}
+
+#[test]
+fn dense_method_filter_frozen() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String(Object.freeze([1, 2, 3, 4]).filter((x) => x % 2).join())"#,
+        js_str!("1,3"),
+    )]);
+}
+
+#[test]
+fn dense_method_indexof_nan_zero() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String([[NaN].indexOf(NaN), [-0].indexOf(0), [0].indexOf(-0), ["1"].indexOf(1), [1, 2, 1].indexOf(1, 1), [1, 2, 1].indexOf(1, -1), [1, 2].indexOf(2, -5)].join())"#,
+        js_str!("-1,0,0,-1,2,2,1"),
+    )]);
+}
+
+#[test]
+fn dense_method_indexof_holes_proto() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { Array.prototype[1] = 7; const r = [1, , 3].indexOf(7); delete Array.prototype[1]; return r + ":" + [1, , 3].indexOf(undefined); })())"#,
+        js_str!("1:-1"),
+    )]);
+}
+
+#[test]
+fn dense_method_indexof_fromindex_mutates() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2, 3]; const r = a.indexOf(9, { valueOf() { a.push(9); return 0; } }); return r + ":" + a.length; })())"#,
+        js_str!("-1:4"),
+    )]);
+}
+
+#[test]
+fn dense_method_indexof_length_extended() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2]; a.length = 5; Array.prototype[4] = "x"; const r = a.indexOf("x"); delete Array.prototype[4]; return r; })())"#,
+        js_str!("4"),
+    )]);
+}
+
+#[test]
+fn dense_method_includes_nan_holes() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String([[NaN].includes(NaN), [1, , 3].includes(undefined), [-0].includes(0), ["a"].includes("a", 1), [1, 2, 3].includes(3, -1)].join())"#,
+        js_str!("true,true,true,false,true"),
+    )]);
+}
+
+#[test]
+fn dense_method_includes_getter() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2, 3]; let n = 0; Object.defineProperty(a, 1, { get() { n++; return 2; } }); return a.includes(3) + ":" + n; })())"#,
+        js_str!("true:1"),
+    )]);
+}
+
+#[test]
+fn dense_method_includes_typed_array_like() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String(Array.prototype.includes.call({ length: 2, 0: NaN }, NaN) + ":" + Array.prototype.indexOf.call("abc", "b"))"#,
+        js_str!("true:1"),
+    )]);
+}
+
+#[test]
+fn dense_method_methods_sparse() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = []; a[5] = 1; a[2] = 2; const s = []; a.forEach((x, i) => s.push(i)); return s.join() + "|" + a.indexOf(1) + "|" + a.includes(undefined) + "|" + a.filter(() => true).length; })())"#,
+        js_str!("2,5|5|true|2"),
+    )]);
+}
+
+#[test]
+fn dense_method_doubles_and_objects() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const o = {}; const a = [1.5, o, "s", 2]; return [a.indexOf(o), a.indexOf(1.5), a.includes("s"), a.map((x) => typeof x).join("")].join(); })())"#,
+        js_str!("1,0,true,numberobjectstringnumber"),
+    )]);
+}
