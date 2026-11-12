@@ -355,8 +355,11 @@ impl Finalize for NanBoxedValue {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe impl Trace for NanBoxedValue {
     custom_trace! {this, mark, {
-        if let Some(o) = this.as_object() {
-            mark(&o);
+        if this.is_object() {
+            // SAFETY: The value holds an object. Borrowing it instead of cloning it spares the
+            // collector a reference count increment and decrement on every edge it follows.
+            let o = unsafe { this.as_object_unchecked() };
+            mark(&*o);
         }
     }}
 }
