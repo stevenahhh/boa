@@ -633,3 +633,45 @@ fn json_stringify_quotes_surrogates_and_controls() {
         ),
     )]);
 }
+
+#[test]
+fn json_parse_duplicate_and_escaped_keys() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var o = JSON.parse('{"a":1,"b":2,"\\u0061":3,"c":{"x":1},"b":4}'); return Object.keys(o).join() + "|" + JSON.stringify(o); })()"#,
+        js_string!(r#"a,b,c|{"a":3,"b":4,"c":{"x":1}}"#),
+    )]);
+}
+
+#[test]
+fn json_parse_proto_and_integer_keys() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var o = JSON.parse('{"z":1,"__proto__":{"p":1},"2":"two","1":"one","-1":"m"}'); return Object.keys(o).join() + "|" + (Object.getPrototypeOf(o) === Object.prototype) + "|" + o.__proto__.p + "|" + ("p" in o); })()"#,
+        js_string!(r#"1,2,z,__proto__,-1|true|1|false"#),
+    )]);
+}
+
+#[test]
+fn json_parse_objects_with_same_keys_stay_independent() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var a = JSON.parse('[{"k":1,"v":"a"},{"k":2,"v":"b"},{"k":3,"v":"c"}]'); a[0].extra = true; delete a[1].k; a[2].v = "changed"; Object.defineProperty(a[2], "k", { enumerable: false }); return JSON.stringify(a) + "|" + Object.keys(a[1]).join() + "|" + Object.keys(a[2]).join(); })()"#,
+        js_string!(r#"[{"k":1,"v":"a","extra":true},{"v":"b"},{"v":"changed"}]|v|v"#),
+    )]);
+}
+
+#[test]
+fn json_parse_non_ascii_and_utf16_texts() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var r = []; ['{"\u00e9":"\u00e9"}', '{"\u4e2d":["\u4e2d",1]}', '{"k":"\ud83d\ude00"}', '{"a":"\\ud83d\\ude00"}', '[1, 2.5e3, -0, "x"]'].forEach(function (t) { var v = JSON.parse(t); r.push(JSON.stringify(v) + ":" + Object.is(v[2], -0)); }); return r.join(" "); })()"#,
+        js_string!(
+            r#"{"é":"é"}:false {"中":["中",1]}:false {"k":"😀"}:false {"a":"😀"}:false [1,2500,0,"x"]:true"#
+        ),
+    )]);
+}
+
+#[test]
+fn json_parse_errors_keep_their_type() {
+    run_test_actions([TestAction::assert_eq(
+        r#"(() => { var r = []; ['{"a":1,}', '{"a" 1}', '{"\u0001":1}', '', '[1,]', '{"a":01}'].forEach(function (t) { try { r.push(typeof JSON.parse(t)); } catch (e) { r.push(e.constructor.name); } }); return r.join(); })()"#,
+        js_string!(r#"SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError"#),
+    )]);
+}
