@@ -18,6 +18,7 @@ use boa_ast::{
     visitor::NodeRef,
 };
 use boa_interner::{JStrRef, Sym};
+use rustc_hash::FxHashSet;
 
 #[cfg(feature = "annex-b")]
 use boa_ast::operations::annex_b_function_declarations_names;
@@ -71,7 +72,7 @@ pub(crate) fn global_declaration_instantiation_context(
     // SKIP: 6. Let functionsToInitialize be a new empty List.
 
     // 7. Let declaredFunctionNames be a new empty List.
-    let mut declared_function_names = Vec::new();
+    let mut declared_function_names = FxHashSet::default();
 
     // 8. For each element d of varDeclarations, in reverse List order, do
     for declaration in var_declarations.iter().rev() {
@@ -88,18 +89,17 @@ pub(crate) fn global_declaration_instantiation_context(
         };
 
         // a.iv. If declaredFunctionNames does not contain fn, then
-        if !declared_function_names.contains(&name.sym()) {
+        if declared_function_names.insert(name.sym()) {
             // SKIP: 1. Let fnDefinable be ? env.CanDeclareGlobalFunction(fn).
             // SKIP: 2. If fnDefinable is false, throw a TypeError exception.
             // 3. Append fn to declaredFunctionNames.
-            declared_function_names.push(name.sym());
 
             // SKIP: 4. Insert d as the first element of functionsToInitialize.
         }
     }
 
     // // 9. Let declaredVarNames be a new empty List.
-    let mut declared_var_names = Vec::new();
+    let mut declared_var_names = FxHashSet::default();
 
     // 10. For each element d of varDeclarations, do
     //     a. If d is either a VariableDeclaration, a ForBinding, or a BindingIdentifier, then
@@ -115,9 +115,8 @@ pub(crate) fn global_declaration_instantiation_context(
                 // SKIP: a. Let vnDefinable be ? env.CanDeclareGlobalVar(vn).
                 // SKIP: b. If vnDefinable is false, throw a TypeError exception.
                 // c. If declaredVarNames does not contain vn, then
-                if !declared_var_names.contains(&name) {
+                if declared_var_names.insert(name) {
                     // i. Append vn to declaredVarNames.
-                    declared_var_names.push(name);
                 }
             }
         }
@@ -160,7 +159,7 @@ pub(crate) fn global_declaration_instantiation_context(
                             context.create_global_var_binding(f_string, false)?;
 
                             // ii. Append F to declaredFunctionOrVarNames.
-                            declared_function_names.push(f);
+                            declared_function_names.insert(f);
                         }
                         // iii. When the FunctionDeclaration f is evaluated, perform the following
                         //      steps in place of the FunctionDeclaration Evaluation algorithm provided in 15.2.6:
@@ -240,7 +239,7 @@ pub(crate) fn prepare_eval_declaration_instantiation(
 
     // 9. Let declaredFunctionNames be a new empty List.
     #[cfg(feature = "annex-b")]
-    let mut declared_function_names = Vec::new();
+    let mut declared_function_names = FxHashSet::default();
 
     // 10. For each element d of varDeclarations, in reverse List order, do
     #[cfg(feature = "annex-b")]
@@ -258,11 +257,10 @@ pub(crate) fn prepare_eval_declaration_instantiation(
         };
 
         // a.iv. If declaredFunctionNames does not contain fn, then
-        if !declared_function_names.contains(&name.sym()) {
+        if declared_function_names.insert(name.sym()) {
             // SKIP: 1. If varEnv is a Global Environment Record, then
 
             // 2. Append fn to declaredFunctionNames.
-            declared_function_names.push(name.sym());
 
             // SKIP: 3. Insert d as the first element of functionsToInitialize.
         }
@@ -405,7 +403,7 @@ impl ByteCompiler<'_> {
         let mut functions_to_initialize = Vec::new();
 
         // 7. Let declaredFunctionNames be a new empty List.
-        let mut declared_function_names = Vec::new();
+        let mut declared_function_names = FxHashSet::default();
 
         // 8. For each element d of varDeclarations, in reverse List order, do
         for declaration in var_declarations.iter().rev() {
@@ -422,7 +420,7 @@ impl ByteCompiler<'_> {
             };
 
             // a.iv. If declaredFunctionNames does not contain fn, then
-            if !declared_function_names.contains(&name.sym()) {
+            if declared_function_names.insert(name.sym()) {
                 // 1. Let fnDefinable be ? env.CanDeclareGlobalFunction(fn).
                 // 2. If fnDefinable is false, throw a TypeError exception.
                 // Done in `Context::global_declaration_instantiation`.
@@ -431,7 +429,6 @@ impl ByteCompiler<'_> {
                 // reuse `global_fns` for this check.
 
                 // 3. Append fn to declaredFunctionNames.
-                declared_function_names.push(name.sym());
 
                 // 4. Insert d as the first element of functionsToInitialize.
                 functions_to_initialize.push(declaration.clone());
@@ -442,6 +439,7 @@ impl ByteCompiler<'_> {
 
         // 9. Let declaredVarNames be a new empty List.
         let mut declared_var_names = Vec::new();
+        let mut declared_var_name_set = FxHashSet::default();
 
         // 10. For each element d of varDeclarations, do
         //     a. If d is either a VariableDeclaration, a ForBinding, or a BindingIdentifier, then
@@ -462,7 +460,7 @@ impl ByteCompiler<'_> {
                     // for this check.
 
                     // c. If declaredVarNames does not contain vn, then
-                    if !declared_var_names.contains(&name) {
+                    if declared_var_name_set.insert(name) {
                         // i. Append vn to declaredVarNames.
                         declared_var_names.push(name);
                     }
@@ -657,7 +655,7 @@ impl ByteCompiler<'_> {
         let mut functions_to_initialize = Vec::new();
 
         // 9. Let declaredFunctionNames be a new empty List.
-        let mut declared_function_names = Vec::new();
+        let mut declared_function_names = FxHashSet::default();
 
         // 10. For each element d of varDeclarations, in reverse List order, do
         for declaration in var_declarations.iter().rev() {
@@ -673,7 +671,7 @@ impl ByteCompiler<'_> {
                 VarScopedDeclaration::VariableDeclaration(_) => continue,
             };
             // a.iv. If declaredFunctionNames does not contain fn, then
-            if !declared_function_names.contains(&name.sym()) {
+            if declared_function_names.insert(name.sym()) {
                 // 1. If varEnv is a Global Environment Record, then
                 //    a. Let fnDefinable be ? varEnv.CanDeclareGlobalFunction(fn).
                 //    b. If fnDefinable is false, throw a TypeError exception.
@@ -683,7 +681,6 @@ impl ByteCompiler<'_> {
                 //    reuse `global_fns` for this check.
 
                 // 2. Append fn to declaredFunctionNames.
-                declared_function_names.push(name.sym());
 
                 // 3. Insert d as the first element of functionsToInitialize.
                 functions_to_initialize.push(declaration.clone());
@@ -718,6 +715,7 @@ impl ByteCompiler<'_> {
 
         // 12. Let declaredVarNames be a new empty List.
         let mut declared_var_names = Vec::new();
+        let mut declared_var_name_set = FxHashSet::default();
 
         // 13. For each element d of varDeclarations, do
         for declaration in var_declarations {
@@ -739,7 +737,7 @@ impl ByteCompiler<'_> {
                     //    for this check.
 
                     // b. If declaredVarNames does not contain vn, then
-                    if !declared_var_names.contains(&name) {
+                    if declared_var_name_set.insert(name) {
                         // i. Append vn to declaredVarNames.
                         declared_var_names.push(name);
                     }
@@ -1097,14 +1095,13 @@ impl ByteCompiler<'_> {
                 let mut variable_scope = self.lexical_scope.clone();
 
                 // d. Let instantiatedVarNames be a new empty List.
-                let mut instantiated_var_names = Vec::new();
+                let mut instantiated_var_names = FxHashSet::default();
 
                 // e. For each element n of varNames, do
                 for n in var_names {
                     // i. If instantiatedVarNames does not contain n, then
-                    if !instantiated_var_names.contains(&n) {
+                    if instantiated_var_names.insert(n) {
                         // 1. Append n to instantiatedVarNames.
-                        instantiated_var_names.push(n);
 
                         let n_string = n.to_js_string(self.interner());
 
@@ -1146,14 +1143,14 @@ impl ByteCompiler<'_> {
             } else {
                 // a. NOTE: Only a single Environment Record is needed for the parameters and top-level vars.
                 // b. Let instantiatedVarNames be a copy of the List parameterBindings.
-                let mut instantiated_var_names = parameter_bindings;
+                let mut instantiated_var_names: FxHashSet<Sym> =
+                    parameter_bindings.into_iter().collect();
 
                 // c. For each element n of varNames, do
                 for n in var_names {
                     // i. If instantiatedVarNames does not contain n, then
-                    if !instantiated_var_names.contains(&n) {
+                    if instantiated_var_names.insert(n) {
                         // 1. Append n to instantiatedVarNames.
-                        instantiated_var_names.push(n);
 
                         let n = n.to_js_string(self.interner());
 
@@ -1205,7 +1202,7 @@ impl ByteCompiler<'_> {
                         );
 
                         // c. Append F to instantiatedVarNames.
-                        instantiated_var_names.push(f);
+                        instantiated_var_names.insert(f);
                     }
 
                     // 3. When the FunctionDeclaration f is evaluated, perform the following steps

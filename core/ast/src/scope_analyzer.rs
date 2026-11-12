@@ -30,7 +30,7 @@ use crate::{
     visitor::{NodeRef, NodeRefMut, VisitorMut},
 };
 use boa_interner::{Interner, Sym};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::ops::ControlFlow;
 
 /// Collect bindings and fill the scopes with them.
@@ -2061,14 +2061,13 @@ fn function_declaration_instantiation(
         // c. Set the VariableEnvironment of calleeContext to varEnv.
 
         // d. Let instantiatedVarNames be a new empty List.
-        let mut instantiated_var_names = Vec::new();
+        let mut instantiated_var_names = FxHashSet::default();
 
         // e. For each element n of varNames, do
         for n in var_names {
             // i. If instantiatedVarNames does not contain n, then
-            if !instantiated_var_names.contains(&n) {
+            if instantiated_var_names.insert(n) {
                 // 1. Append n to instantiatedVarNames.
-                instantiated_var_names.push(n);
 
                 let n_string = n.to_js_string(interner);
 
@@ -2081,14 +2080,13 @@ fn function_declaration_instantiation(
     } else {
         // a. NOTE: Only a single Environment Record is needed for the parameters and top-level vars.
         // b. Let instantiatedVarNames be a copy of the List parameterBindings.
-        let mut instantiated_var_names = parameter_bindings;
+        let mut instantiated_var_names: FxHashSet<Sym> = parameter_bindings.into_iter().collect();
 
         // c. For each element n of varNames, do
         for n in var_names {
             // i. If instantiatedVarNames does not contain n, then
-            if !instantiated_var_names.contains(&n) {
+            if instantiated_var_names.insert(n) {
                 // 1. Append n to instantiatedVarNames.
-                instantiated_var_names.push(n);
 
                 let n = n.to_js_string(interner);
 
@@ -2126,7 +2124,7 @@ fn function_declaration_instantiation(
                     drop(var_env.create_mutable_binding(f_string, false));
 
                     // c. Append F to instantiatedVarNames.
-                    instantiated_var_names.push(f);
+                    instantiated_var_names.insert(f);
                 }
             }
         }
@@ -2207,13 +2205,12 @@ fn module_instantiation(module: &Module, env: &Scope, interner: &Interner) {
         env.create_immutable_binding(local_name, true);
     }
     let var_declarations = var_scoped_declarations(module);
-    let mut declared_var_names = Vec::new();
+    let mut declared_var_names = FxHashSet::default();
     for var in var_declarations {
         for name in var.bound_names() {
             let name = name.to_js_string(interner);
-            if !declared_var_names.contains(&name) {
-                drop(env.create_mutable_binding(name.clone(), false));
-                declared_var_names.push(name);
+            if declared_var_names.insert(name.clone()) {
+                drop(env.create_mutable_binding(name, false));
             }
         }
     }
@@ -2387,7 +2384,7 @@ pub(crate) fn eval_declaration_instantiation_scope(
     let mut functions_to_initialize = Vec::new();
 
     // 9. Let declaredFunctionNames be a new empty List.
-    let mut declared_function_names = Vec::new();
+    let mut declared_function_names = FxHashSet::default();
 
     // 10. For each element d of varDeclarations, in reverse List order, do
     for declaration in var_declarations.iter().rev() {
@@ -2403,10 +2400,9 @@ pub(crate) fn eval_declaration_instantiation_scope(
             VarScopedDeclaration::VariableDeclaration(_) => continue,
         };
         // a.iv. If declaredFunctionNames does not contain fn, then
-        if !declared_function_names.contains(&name.sym()) {
+        if declared_function_names.insert(name.sym()) {
             // 1. If varEnv is a Global Environment Record, then
             // 2. Append fn to declaredFunctionNames.
-            declared_function_names.push(name.sym());
 
             // 3. Insert d as the first element of functionsToInitialize.
             functions_to_initialize.push(declaration.clone());
@@ -2444,6 +2440,7 @@ pub(crate) fn eval_declaration_instantiation_scope(
 
     // 12. Let declaredVarNames be a new empty List.
     let mut declared_var_names = Vec::new();
+    let mut declared_var_name_set = FxHashSet::default();
 
     // 13. For each element d of varDeclarations, do
     for declaration in var_declarations {
@@ -2458,7 +2455,7 @@ pub(crate) fn eval_declaration_instantiation_scope(
             if !declared_function_names.contains(&name) {
                 // a. If varEnv is a Global Environment Record, then
                 // b. If declaredVarNames does not contain vn, then
-                if !declared_var_names.contains(&name) {
+                if declared_var_name_set.insert(name) {
                     // i. Append vn to declaredVarNames.
                     declared_var_names.push(name);
                 }

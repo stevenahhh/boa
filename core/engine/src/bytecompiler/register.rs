@@ -1,5 +1,5 @@
 use crate::vm::opcode::RegisterOperand;
-use std::mem::forget;
+use std::{cmp::Reverse, collections::BinaryHeap, mem::forget};
 
 bitflags::bitflags! {
     #[derive(Debug, Default, Clone, Copy)]
@@ -79,21 +79,20 @@ impl Drop for Register {
 #[derive(Debug, Default)]
 pub(crate) struct RegisterAllocator {
     registers: Vec<RegisterEntry>,
+    /// Indices of the unused registers. Popping yields the lowest one, the register a scan from
+    /// index 0 would find. Only [`Self::dealloc`] clears `USED`, so it is the only producer.
+    free: BinaryHeap<Reverse<u32>>,
 }
 
 impl RegisterAllocator {
     pub(crate) fn alloc(&mut self) -> Register {
-        if let Some((i, register)) = self
-            .registers
-            .iter_mut()
-            .enumerate()
-            .find(|(_, reg)| !reg.flags.is_used())
-        {
+        if let Some(Reverse(i)) = self.free.pop() {
+            let register = &mut self.registers[i as usize];
             assert!(!register.flags.is_persistent());
 
             register.flags |= RegisterFlags::USED;
             return Register {
-                index: i as u32,
+                index: i,
                 flags: register.flags,
             };
         }
@@ -133,6 +132,7 @@ impl RegisterAllocator {
             "Cannot deallocate unused variable"
         );
         register.flags.set(RegisterFlags::USED, false);
+        self.free.push(Reverse(reg.index));
 
         // NOTE: We should not drop it since, dropping it used to detect bugs.
         forget(reg);
@@ -147,5 +147,32 @@ impl RegisterAllocator {
         }
 
         self.registers.len() as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RegisterAllocator;
+
+    /// Allocation hands out the lowest unused index; the compiled bytecode depends on it.
+    #[test]
+    fn alloc_returns_the_lowest_unused_index() {
+        let mut allocator = RegisterAllocator::default();
+        let [r0, r1, r2, r3, r4] = [(); 5].map(|()| allocator.alloc());
+        let persistent = allocator.alloc_persistent();
+        allocator.dealloc(r3);
+        allocator.dealloc(r1);
+        allocator.dealloc(r4);
+
+        let reused = [(); 4].map(|()| allocator.alloc());
+        assert_eq!(reused.each_ref().map(super::Register::index), [1, 3, 4, 6]);
+        assert_eq!(persistent.index(), 5);
+
+        allocator.dealloc(r0);
+        allocator.dealloc(r2);
+        for reg in reused {
+            allocator.dealloc(reg);
+        }
+        assert_eq!(allocator.finish(), 7);
     }
 }
