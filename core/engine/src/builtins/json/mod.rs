@@ -270,7 +270,6 @@ impl Json {
         let source = Source::from_bytes(&script_string);
         let mut parser = Parser::new(source);
         parser.set_json_parse();
-        parser.set_stack_limit(context.remaining_native_stack());
 
         // Use parse_script_with_source to get SourceText for span-based source extraction
         let (script, source_text) =

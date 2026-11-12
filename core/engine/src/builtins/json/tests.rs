@@ -425,3 +425,43 @@ fn json_parse_invalid_text_throws_syntax_error() {
         js_str!("SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError"),
     )]);
 }
+
+#[test]
+fn json_parse_accepts_every_depth_that_serde_json_accepts() {
+    // An unoptimized build needs more native stack for 127 levels than a test thread has.
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            run_test_actions([
+                TestAction::run(indoc! {r#"
+                    function nest(n, open, close) {
+                        return open.repeat(n) + "1" + close.repeat(n);
+                    }
+                    function depth(v, key) {
+                        let d = 0;
+                        while (typeof v === "object") { v = v[key]; d++; }
+                        return d + ":" + v;
+                    }
+                "#}),
+                TestAction::assert_eq(
+                    r#"depth(JSON.parse(nest(127, "[", "]")), 0)"#,
+                    js_str!("127:1"),
+                ),
+                TestAction::assert_eq(
+                    r#"depth(JSON.parse(nest(127, '{"a":', "}")), "a")"#,
+                    js_str!("127:1"),
+                ),
+                TestAction::assert_eq(
+                    r#"depth(JSON.parse(nest(127, "[", "]"), (k, v) => v), 0)"#,
+                    js_str!("127:1"),
+                ),
+                TestAction::assert_eq(
+                    r#"depth(JSON.parse(nest(127, '{"a":', "}"), (k, v) => v), "a")"#,
+                    js_str!("127:1"),
+                ),
+            ]);
+        })
+        .expect("spawn the test thread")
+        .join()
+        .expect("the test thread panicked");
+}
