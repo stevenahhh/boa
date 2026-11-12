@@ -234,7 +234,7 @@ impl SetPropertyByValue {
 /// - each object on the prototype chain is an array or the immutable prototype
 ///   `%Object.prototype%`, whose `[[GetOwnProperty]]`, `[[GetPrototypeOf]]` and `[[Set]]` are the
 ///   ordinary ones, and owns no indexed property.
-fn append_dense_array_element(
+pub(crate) fn append_dense_array_element(
     array: &JsObject,
     index: u32,
     value: &JsValue,

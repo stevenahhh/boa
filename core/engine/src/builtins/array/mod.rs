@@ -32,7 +32,7 @@ use crate::{
     string::StaticJsStrings,
     symbol::JsSymbol,
     value::{IntegerOrInfinity, JsValue},
-    vm::check_native_stack,
+    vm::{check_native_stack, opcode::append_dense_array_element},
 };
 use std::cmp::{Ordering, min};
 
@@ -890,7 +890,27 @@ impl Array {
                 .into());
         }
         // 5. For each element E of items, do
-        for element in args.iter().cloned() {
+        // While `Set(O, len, E, true)` only appends a dense element and moves `length` to
+        // `len + 1`, do that directly; `length` then already is `len` with step 6 changing nothing.
+        let mut appended = 0;
+        if o.is_array() {
+            for element in args {
+                // Indices stop below 2^32 - 1.
+                let Some(index) = u32::try_from(len).ok().filter(|index| *index < u32::MAX) else {
+                    break;
+                };
+                if !append_dense_array_element(&o, index, element, context) {
+                    break;
+                }
+                len += 1;
+                appended += 1;
+            }
+            if appended == args.len() {
+                // 7. Return 𝔽(len).
+                return Ok(len.into());
+            }
+        }
+        for element in args[appended..].iter().cloned() {
             // a. Perform ? Set(O, ! ToString(𝔽(len)), E, true).
             o.set(len, element, true, context)?;
             // b. Set len to len + 1.

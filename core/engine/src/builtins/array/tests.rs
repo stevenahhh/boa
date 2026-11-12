@@ -1296,3 +1296,126 @@ fn dense_method_doubles_and_objects() {
         js_str!("1,0,true,numberobjectstringnumber"),
     )]);
 }
+
+// ── Array.prototype.push appending dense elements directly (fast path bail-outs) ──
+// Expected values come from node v26.7.0.
+
+#[test]
+fn dense_push_push_multi() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1]; const r = a.push(2, 3, 4); return r + ":" + a.join(); })())"#,
+        js_str!("4:1,2,3,4"),
+    )]);
+}
+
+#[test]
+fn dense_push_push_frozen() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = Object.freeze([1]); try { a.push(2); } catch (e) { return e.constructor.name + ":" + a.length; } })())"#,
+        js_str!("TypeError:1"),
+    )]);
+}
+
+#[test]
+fn dense_push_push_nonwritable_length() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2]; Object.defineProperty(a, "length", { writable: false }); try { a.push(3); } catch (e) { return e.constructor.name + ":" + a.length + ":" + (2 in a); } })())"#,
+        js_str!("TypeError:2:false"),
+    )]);
+}
+
+#[test]
+fn dense_push_push_prevent_extensions() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = Object.preventExtensions([1]); try { a.push(2); } catch (e) { return e.constructor.name + ":" + a.length; } })())"#,
+        js_str!("TypeError:1"),
+    )]);
+}
+
+#[test]
+fn dense_push_push_proto_setter() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { let seen = []; Object.defineProperty(Array.prototype, 2, { set(v) { seen.push(v); }, configurable: true }); const a = [0, 1]; const r = a.push("x", "y"); delete Array.prototype[2]; return r + ":" + a.length + ":" + (2 in a) + ":" + a[3] + ":" + seen.join(); })())"#,
+        js_str!("4:4:false:y:x"),
+    )]);
+}
+
+#[test]
+fn dense_push_push_object_proto_setter() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { let seen = 0; Object.defineProperty(Object.prototype, 1, { set(v) { seen++; }, configurable: true }); const a = [0]; a.push(5); delete Object.prototype[1]; return a.length + ":" + seen + ":" + (1 in a); })())"#,
+        js_str!("2:1:false"),
+    )]);
+}
+
+#[test]
+fn dense_push_push_holes() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2]; a.length = 4; a.push(5); return a.length + ":" + a[4] + ":" + (2 in a); })())"#,
+        js_str!("5:5:false"),
+    )]);
+}
+
+#[test]
+fn dense_push_push_subclass() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { class A extends Array {} const a = new A(); a.push(1, 2); return (a instanceof A) + ":" + a.length + ":" + a.join(); })())"#,
+        js_str!("true:2:1,2"),
+    )]);
+}
+
+#[test]
+fn dense_push_push_proxy() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const log = []; const p = new Proxy([], { set(t, k, v, r) { log.push(String(k)); return Reflect.set(t, k, v, r); } }); p.push(1, 2); return log.join(); })())"#,
+        js_str!("0,1,length"),
+    )]);
+}
+
+#[test]
+fn dense_push_push_array_like() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const o = { length: 2 }; const r = Array.prototype.push.call(o, "a"); return r + ":" + o[2] + ":" + o.length; })())"#,
+        js_str!("3:a:3"),
+    )]);
+}
+
+#[test]
+fn dense_push_push_length_getter_object() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const o = { get length() { return 1; } }; try { Array.prototype.push.call(o, "a"); } catch (e) { return e.constructor.name + ":" + o[1]; } })())"#,
+        js_str!("TypeError:a"),
+    )]);
+}
+
+#[test]
+fn dense_push_push_max_length() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = []; a.length = 4294967295; try { a.push(1); } catch (e) { return e.constructor.name + ":" + a[4294967295] + ":" + a.length; } })())"#,
+        js_str!("RangeError:1:4294967295"),
+    )]);
+}
+
+#[test]
+fn dense_push_push_none() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1, 2]; return a.push() + ":" + a.length; })())"#,
+        js_str!("2:2"),
+    )]);
+}
+
+#[test]
+fn dense_push_push_types() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = [1]; a.push(1.5, "s", null); a.push(undefined); return a.length + ":" + a.map(x => typeof x).join(); })())"#,
+        js_str!("5:number,number,string,object,undefined"),
+    )]);
+}
+
+#[test]
+fn dense_push_push_sealed() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const a = Object.seal([1]); try { a.push(2); } catch (e) { return e.constructor.name + ":" + a.length; } })())"#,
+        js_str!("TypeError:1"),
+    )]);
+}
