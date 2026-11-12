@@ -1066,6 +1066,38 @@ impl Context {
 
         Ok(())
     }
+
+    /// Returns the lowest native stack address that native code may reach.
+    ///
+    /// That is the native stack limit below the start of the outermost run of the interpreter, or
+    /// below the current end of the stack when no run is active, for native code that the host
+    /// calls directly. A recursive native algorithm reads it once and checks it with
+    /// [`check_native_stack`] at each level, so that like a call it fails with the same
+    /// catchable `RangeError` instead of overflowing the native stack.
+    pub(crate) fn native_stack_floor(&self) -> usize {
+        let start = if self.vm.native_stack_start == 0 {
+            native_stack_position()
+        } else {
+            self.vm.native_stack_start
+        };
+        start.saturating_sub(self.vm.runtime_limits.native_stack_limit())
+    }
+
+    /// Returns how many bytes of native stack native code may still use from here; see
+    /// [`Context::native_stack_floor`].
+    pub(crate) fn remaining_native_stack(&self) -> usize {
+        native_stack_position().saturating_sub(self.native_stack_floor())
+    }
+}
+
+/// Throws the `RangeError` of a stack overflow once the native stack has grown past `floor`; see
+/// [`Context::native_stack_floor`].
+#[inline]
+pub(crate) fn check_native_stack(floor: usize) -> JsResult<()> {
+    if native_stack_position() < floor {
+        return Err(stack_overflow());
+    }
+    Ok(())
 }
 
 /// Returns an address on the native stack at its current end.

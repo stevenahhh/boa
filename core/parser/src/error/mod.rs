@@ -103,6 +103,10 @@ pub enum Error {
         err: &'static str,
     },
 
+    /// The source nests deeper than the native stack the parser may use allows; see
+    /// [`Parser::set_stack_limit`](crate::Parser::set_stack_limit).
+    StackOverflow,
+
     /// Catch all General Error
     General {
         /// The error message.
@@ -249,6 +253,7 @@ impl fmt::Display for Error {
             ),
             Self::Lex { err } => err.fmt(f),
             Self::ScopeAnalysis { err } => write!(f, "invalid scope analysis: {err}"),
+            Self::StackOverflow => f.write_str("the source nests too deeply"),
         }
     }
 }

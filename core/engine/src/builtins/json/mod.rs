@@ -36,7 +36,7 @@ use crate::{
     string::{CodePoint, StaticJsStrings},
     symbol::JsSymbol,
     value::IntegerOrInfinity,
-    vm::{CallFrame, CallFrameFlags, source_info::SourcePath},
+    vm::{CallFrame, CallFrameFlags, check_native_stack, source_info::SourcePath},
 };
 use boa_parser::{Parser, Source};
 
@@ -270,6 +270,7 @@ impl Json {
         let source = Source::from_bytes(&script_string);
         let mut parser = Parser::new(source);
         parser.set_json_parse();
+        parser.set_stack_limit(context.remaining_native_stack());
 
         // Use parse_script_with_source to get SourceText for span-based source extraction
         let (script, source_text) =
@@ -758,6 +759,7 @@ impl Json {
             indent,
             gap,
             property_list,
+            stack_floor: context.native_stack_floor(),
         };
 
         // 12. Return ? SerializeJSONProperty(state, the empty String, wrapper).
@@ -780,6 +782,8 @@ impl Json {
         holder: &JsObject,
         context: &mut Context,
     ) -> JsResult<Option<JsString>> {
+        check_native_stack(state.stack_floor)?;
+
         // 1. Let value be ? Get(holder, key).
         let mut value = holder.get(key.clone(), context)?;
 
@@ -1253,4 +1257,7 @@ struct StateRecord {
     indent: JsString,
     gap: JsString,
     property_list: Option<Vec<JsString>>,
+    /// Serializing recurses once per level of nesting in the value; see
+    /// [`Context::native_stack_floor`].
+    stack_floor: usize,
 }

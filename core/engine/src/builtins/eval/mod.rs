@@ -126,6 +126,7 @@ impl Eval {
 
         let mut parser = Parser::new(source);
         parser.set_identifier(context.next_parser_identifier());
+        parser.set_stack_limit(context.remaining_native_stack());
         if strict {
             parser.set_strict();
         }

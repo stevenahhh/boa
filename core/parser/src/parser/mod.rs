@@ -291,6 +291,18 @@ impl<R> Parser<'_, R> {
     {
         self.cursor.set_identifier(identifier);
     }
+
+    /// Limits the native stack the parser may use from here on to `bytes`.
+    ///
+    /// Each level of nesting in the source takes the parser a few frames of recursion. Past the
+    /// limit, parsing fails with [`Error::StackOverflow`] instead of overflowing the stack.
+    /// Without a limit the parser recurses as deep as the source nests.
+    pub fn set_stack_limit(&mut self, bytes: usize)
+    where
+        R: ReadChar,
+    {
+        self.cursor.set_stack_limit(bytes);
+    }
 }
 
 /// Parses a full script.

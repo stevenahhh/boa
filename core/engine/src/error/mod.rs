@@ -1404,6 +1404,11 @@ impl JsNativeError {
 impl From<boa_parser::Error> for JsNativeError {
     #[cfg_attr(feature = "native-backtrace", track_caller)]
     fn from(err: boa_parser::Error) -> Self {
+        // Source nested too deeply to parse within the native stack limit is a stack overflow,
+        // as it is in browsers, not a syntax error.
+        if matches!(err, boa_parser::Error::StackOverflow) {
+            return Self::range().with_message("Maximum call stack size exceeded");
+        }
         Self::syntax().with_message(err.to_string())
     }
 }

@@ -3,7 +3,7 @@ use crate::vm::CallFrame;
 use crate::vm::call_frame::CallFrameLocation;
 use crate::vm::source_info::SourcePath;
 use crate::{
-    Context, JsNativeErrorKind, JsValue, NativeFunction, TestAction, js_string,
+    Context, JsNativeErrorKind, JsValue, NativeFunction, Script, TestAction, js_string,
     property::Attribute, run_test_actions, run_test_actions_with,
 };
 use boa_ast::Position;
@@ -532,20 +532,27 @@ fn native_stack_limit_stops_recursion_through_native_code() {
             // Without the native stack limit, this recursion stops at the recursion limit after
             // 63 levels, each a JavaScript frame and a nested run, far from overflowing.
             context.runtime_limits_mut().set_recursion_limit(128);
+            // Parsing takes more than 8 KiB of native stack too, so the script is parsed first.
+            let script = Script::parse(
+                Source::from_bytes(indoc! {r#"
+                    let depth = 0;
+                    function f(n) { depth = n; return [n + 1].map(f)[0]; }
+                    let name = "none";
+                    try { f(0); } catch (e) { name = e.name; }
+                    `${name} ${depth < 40}`
+                "#}),
+                None,
+                context,
+            )
+            .expect("the script must parse");
             context
                 .runtime_limits_mut()
                 .set_native_stack_limit(8 * 1024);
+            assert_eq!(
+                script.evaluate(context),
+                Ok(js_str!("RangeError true").into())
+            );
         }),
-        TestAction::assert_eq(
-            indoc! {r#"
-                let depth = 0;
-                function f(n) { depth = n; return [n + 1].map(f)[0]; }
-                let name = "none";
-                try { f(0); } catch (e) { name = e.name; }
-                `${name} ${depth < 40}`
-            "#},
-            js_str!("RangeError true"),
-        ),
         TestAction::inspect_context(|context| {
             context
                 .runtime_limits_mut()
@@ -716,4 +723,97 @@ fn recursion_in_setter_throws_a_range_error() {
             "Maximum call stack size exceeded",
         ),
     ]);
+}
+
+/// Environment variable that tells a run of the test binary which deep nesting case to run.
+const DEEP_NESTING_CASE: &str = "BOA_DEEP_NESTING_CASE";
+
+/// Scripts that nest deeper than the native stack the engine may use, by default half of the
+/// stack of a thread spawned by std, and the error each must end with.
+fn deep_nesting_cases() -> Vec<(&'static str, String, &'static str)> {
+    let script = "[".repeat(100_000) + &"]".repeat(100_000);
+    [
+        ("script", script.as_str(), "RangeError"),
+        ("stringify", "let a = []; for (let i = 0; i < 200000; i++) a = [a]; JSON.stringify(a)", "RangeError"),
+        ("stringify indented", "let o = {}; for (let i = 0; i < 200000; i++) o = { o }; JSON.stringify(o, null, 1)", "RangeError"),
+        ("flat", "let a = []; for (let i = 0; i < 200000; i++) a = [a]; a.flat(Infinity)", "RangeError"),
+        ("eval array", "eval('['.repeat(100000) + ']'.repeat(100000))", "RangeError"),
+        ("eval parentheses", "eval('('.repeat(100000) + '1' + ')'.repeat(100000))", "RangeError"),
+        ("function body", "Function('return ' + '['.repeat(100000) + ']'.repeat(100000))", "RangeError"),
+        ("function parameters", "Function('a = ' + '['.repeat(100000) + ']'.repeat(100000), '')", "RangeError"),
+        ("unary", "eval('!'.repeat(100000) + '1')", "RangeError"),
+        ("exponent", "eval('2' + '**1'.repeat(100000))", "RangeError"),
+        ("new", "eval('new '.repeat(100000) + 'Object')", "RangeError"),
+        ("blocks", "eval('{'.repeat(100000) + '}'.repeat(100000))", "RangeError"),
+        ("if", "eval('if (1) '.repeat(100000) + ';')", "RangeError"),
+        ("functions", "eval('(function () {'.repeat(20000) + '})'.repeat(20000))", "RangeError"),
+        ("var pattern", "eval('var ' + '['.repeat(50000) + 'x' + ']'.repeat(50000) + ' = [];')", "RangeError"),
+        ("assignment pattern", "var x; eval('['.repeat(50000) + 'x' + ']'.repeat(50000) + ' = [];')", "RangeError"),
+        ("object pattern", "eval('var ' + '{a:'.repeat(50000) + 'x' + '}'.repeat(50000) + ' = {};')", "RangeError"),
+        ("to string", "let a = []; for (let i = 0; i < 200000; i++) a = [a]; String(a)", "RangeError"),
+        ("json parse", "JSON.parse('['.repeat(200000) + ']'.repeat(200000))", "SyntaxError"),
+        ("regexp", "new RegExp('('.repeat(100000) + ')'.repeat(100000))", "SyntaxError"),
+        ("copy", "let o = {}; for (let i = 0; i < 200000; i++) o = { o }; const copy = (v) => typeof v !== 'object' ? v : { o: copy(v.o) }; copy(o)", "RangeError"),
+    ]
+    .into_iter()
+    .map(|(name, script, error)| (name, script.to_owned(), error))
+    .collect()
+}
+
+/// Runs `script` with the limits render sets and returns the name of the error it ends with.
+fn deep_nesting_outcome(script: &str) -> String {
+    let context = &mut Context::default();
+    context.runtime_limits_mut().set_recursion_limit(10_000);
+    context.runtime_limits_mut().set_stack_size_limit(1_000_000);
+    match context.eval(Source::from_bytes(script)) {
+        Ok(_) => "no error".to_owned(),
+        Err(error) => error.as_native().map_or_else(
+            || "not a native error".to_owned(),
+            |error| error.kind().to_string(),
+        ),
+    }
+}
+
+#[test]
+fn deep_nesting_throws_instead_of_overflowing_the_native_stack() {
+    // A native stack overflow aborts the process, so each case runs in a run of this test binary
+    // that runs only this test, on a thread with the 2 MiB stack of the thread render runs
+    // scripts on.
+    if let Ok(name) = std::env::var(DEEP_NESTING_CASE) {
+        let (_, script, _) = deep_nesting_cases()
+            .into_iter()
+            .find(|case| case.0 == name)
+            .expect("the case must exist");
+        let outcome = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || deep_nesting_outcome(&script))
+            .expect("spawn a thread")
+            .join()
+            .expect("the thread must not panic");
+        println!("deep nesting outcome: {outcome}");
+        return;
+    }
+    let (_, module) = module_path!().split_once("::").expect("a module path");
+    let test = format!("{module}::deep_nesting_throws_instead_of_overflowing_the_native_stack");
+    let binary = std::env::current_exe().expect("the path of the test binary");
+    let mut wrong = Vec::new();
+    for (name, _, expected) in deep_nesting_cases() {
+        let output = std::process::Command::new(&binary)
+            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(DEEP_NESTING_CASE, name)
+            .output()
+            .expect("run the test binary");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // The test harness prints the name of the test on the same line.
+        let outcome = stdout
+            .lines()
+            .find_map(|line| Some(line.split_once("deep nesting outcome: ")?.1));
+        if !output.status.success() || outcome != Some(expected) {
+            wrong.push(format!(
+                "{name}: {}, {outcome:?} instead of {expected}",
+                output.status
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }

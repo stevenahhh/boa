@@ -37,6 +37,9 @@ pub(super) struct Cursor<R> {
 
     /// Tracks the number of tagged templates that are currently being parsed.
     tagged_templates_count: u32,
+
+    /// The lowest native stack address the parser may reach, or `0` for no limit.
+    stack_floor: usize,
 }
 
 impl<R> Cursor<R>
@@ -51,7 +54,26 @@ where
             json_parse: false,
             identifier: 0,
             tagged_templates_count: 0,
+            stack_floor: 0,
         }
+    }
+
+    /// Lets the parser use at most `bytes` more of the native stack.
+    pub(super) fn set_stack_limit(&mut self, bytes: usize) {
+        self.stack_floor = stack_position().saturating_sub(bytes);
+    }
+
+    /// Fails once the native stack has grown past the limit of [`Self::set_stack_limit`].
+    ///
+    /// The parser descends one level of recursion for each level of nesting in the source, and so
+    /// do the passes over the tree it builds, so this bounds the nesting. A stack that grows
+    /// upwards never reaches the limit.
+    #[inline]
+    pub(super) fn check_stack(&self) -> ParseResult<()> {
+        if stack_position() < self.stack_floor {
+            return Err(Error::StackOverflow);
+        }
+        Ok(())
     }
 
     /// Sets the goal symbol of the cursor to `Module`.
@@ -312,4 +334,11 @@ where
     pub(super) fn take_source(&mut self) -> boa_ast::SourceText {
         self.buffered_lexer.take_source()
     }
+}
+
+/// Returns an address on the native stack at its current end.
+#[inline]
+fn stack_position() -> usize {
+    let marker = 0u8;
+    std::hint::black_box(std::ptr::from_ref(&marker)).addr()
 }

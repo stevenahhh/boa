@@ -92,6 +92,7 @@ impl Script {
         let path = src.path().map(Path::to_path_buf);
         let mut parser = Parser::new(src);
         parser.set_identifier(context.next_parser_identifier());
+        parser.set_stack_limit(context.remaining_native_stack());
         if context.is_strict() {
             parser.set_strict();
         }

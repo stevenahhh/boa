@@ -116,6 +116,7 @@ where
     type Output = ast::Statement;
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
+        cursor.check_stack()?;
         // TODO: add BreakableStatement and divide Whiles, fors and so on to another place.
         let tok = cursor.peek(0, interner).or_abrupt()?;
 
@@ -421,6 +422,7 @@ where
     type Output = ast::StatementListItem;
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
+        cursor.check_stack()?;
         let tok = cursor.peek(0, interner).or_abrupt()?;
 
         match tok.kind().clone() {
@@ -514,6 +516,7 @@ where
     type Output = ObjectPattern;
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
+        cursor.check_stack()?;
         let start = cursor
             .expect(
                 TokenKind::Punctuator(Punctuator::OpenBlock),
@@ -762,6 +765,7 @@ where
     type Output = ArrayPattern;
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
+        cursor.check_stack()?;
         let start = cursor
             .expect(
                 TokenKind::Punctuator(Punctuator::OpenBracket),
