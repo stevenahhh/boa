@@ -53,9 +53,26 @@ pub(crate) struct SetIterator {
 
 impl IntrinsicObject for SetIterator {
     fn init(realm: &Realm) {
+        let next = BuiltInBuilder::callable_with_object(
+            realm,
+            realm
+                .intrinsics()
+                .objects()
+                .set_iterator_next()
+                .clone()
+                .into(),
+            Self::next,
+        )
+        .name(js_string!("next"))
+        .build();
+
         BuiltInBuilder::with_intrinsic::<Self>(realm)
             .prototype(realm.intrinsics().constructors().iterator().prototype())
-            .static_method(Self::next, js_string!("next"), 0)
+            .static_property(
+                js_string!("next"),
+                next,
+                Attribute::WRITABLE | Attribute::CONFIGURABLE,
+            )
             .static_property(
                 JsSymbol::to_string_tag(),
                 js_string!("Set Iterator"),
@@ -109,7 +126,22 @@ impl SetIterator {
             .as_ref()
             .and_then(JsObject::downcast_mut::<Self>)
             .ok_or_else(|| JsNativeError::typ().with_message("`this` is not an SetIterator"))?;
+        let (value, done) = set_iterator.advance(context);
+        Ok(create_iter_result_object(value, done, context))
+    }
 
+    /// Runs `%SetIteratorPrototype%.next` on `iterator` without creating the result object,
+    /// returning its `value` and `done`, or `None`, changing nothing, if `iterator` is not a
+    /// `SetIterator`. The steps of `next` run no user code.
+    pub(crate) fn step(iterator: &JsObject, context: &mut Context) -> Option<(JsValue, bool)> {
+        let mut set_iterator = iterator.downcast_mut::<Self>()?;
+        Some(set_iterator.advance(context))
+    }
+
+    /// The steps of `%SetIteratorPrototype%.next` after the `this` check, returning the `value`
+    /// and `done` of the result.
+    fn advance(&mut self, context: &mut Context) -> (JsValue, bool) {
+        let set_iterator = self;
         let item_kind = set_iterator.iteration_kind;
 
         if let Some(obj) = set_iterator.iterated_set.take() {
@@ -128,21 +160,15 @@ impl SetIterator {
             if let Some(element) = e {
                 let item = match item_kind {
                     PropertyNameKind::KeyAndValue => {
-                        let result =
-                            Array::create_array_from_list([element.clone(), element], context);
-                        Ok(create_iter_result_object(result.into(), false, context))
+                        Array::create_array_from_list([element.clone(), element], context).into()
                     }
-                    _ => Ok(create_iter_result_object(element, false, context)),
+                    _ => element,
                 };
                 set_iterator.iterated_set = Some(obj);
-                return item;
+                return (item, false);
             }
         }
 
-        Ok(create_iter_result_object(
-            JsValue::undefined(),
-            true,
-            context,
-        ))
+        (JsValue::undefined(), true)
     }
 }

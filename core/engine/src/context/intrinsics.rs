@@ -1103,6 +1103,15 @@ pub struct IntrinsicObjects {
     /// [`%ArrayIteratorPrototype%.next`](https://tc39.es/ecma262/#sec-%arrayiteratorprototype%.next)
     array_iterator_next: JsFunction,
 
+    /// [`%MapIteratorPrototype%.next`](https://tc39.es/ecma262/#sec-%mapiteratorprototype%.next)
+    map_iterator_next: JsFunction,
+
+    /// [`%SetIteratorPrototype%.next`](https://tc39.es/ecma262/#sec-%setiteratorprototype%.next)
+    set_iterator_next: JsFunction,
+
+    /// [`%StringIteratorPrototype%.next`](https://tc39.es/ecma262/#sec-%stringiteratorprototype%.next)
+    string_iterator_next: JsFunction,
+
     /// Cached iterator prototypes.
     iterator_prototypes: IteratorPrototypes,
 
@@ -1176,6 +1185,9 @@ impl IntrinsicObjects {
             array_prototype_values: JsFunction::empty_intrinsic_function(false),
             array_prototype_to_string: JsFunction::empty_intrinsic_function(false),
             array_iterator_next: JsFunction::empty_intrinsic_function(false),
+            map_iterator_next: JsFunction::empty_intrinsic_function(false),
+            set_iterator_next: JsFunction::empty_intrinsic_function(false),
+            string_iterator_next: JsFunction::empty_intrinsic_function(false),
             iterator_prototypes: IteratorPrototypes::default(),
             generator: JsObject::with_null_proto(),
             async_generator: JsObject::with_null_proto(),
@@ -1235,6 +1247,33 @@ impl IntrinsicObjects {
     #[must_use]
     pub(crate) const fn array_iterator_next(&self) -> &JsFunction {
         &self.array_iterator_next
+    }
+
+    /// Gets the [`%MapIteratorPrototype%.next`][spec] intrinsic function.
+    ///
+    /// [spec]: https://tc39.es/ecma262/#sec-%mapiteratorprototype%.next
+    #[inline]
+    #[must_use]
+    pub(crate) const fn map_iterator_next(&self) -> &JsFunction {
+        &self.map_iterator_next
+    }
+
+    /// Gets the [`%SetIteratorPrototype%.next`][spec] intrinsic function.
+    ///
+    /// [spec]: https://tc39.es/ecma262/#sec-%setiteratorprototype%.next
+    #[inline]
+    #[must_use]
+    pub(crate) const fn set_iterator_next(&self) -> &JsFunction {
+        &self.set_iterator_next
+    }
+
+    /// Gets the [`%StringIteratorPrototype%.next`][spec] intrinsic function.
+    ///
+    /// [spec]: https://tc39.es/ecma262/#sec-%stringiteratorprototype%.next
+    #[inline]
+    #[must_use]
+    pub(crate) const fn string_iterator_next(&self) -> &JsFunction {
+        &self.string_iterator_next
     }
 
     /// Gets the cached iterator prototypes.

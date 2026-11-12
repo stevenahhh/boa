@@ -2,7 +2,10 @@
 
 use crate::{
     Context, JsResult, JsValue,
-    builtins::{BuiltInBuilder, IntrinsicObject, array::ArrayIterator},
+    builtins::{
+        BuiltInBuilder, IntrinsicObject, array::ArrayIterator, map::MapIterator, set::SetIterator,
+        string::StringIterator,
+    },
     context::intrinsics::Intrinsics,
     error::JsNativeError,
     js_string,
@@ -396,6 +399,9 @@ pub struct IteratorRecord {
     last_result: LastResult,
 }
 
+/// Runs a built-in `next` method on an iterator, see [`IteratorRecord::step_builtin`].
+type BuiltinStep = fn(&JsObject, &mut Context) -> JsResult<Option<(JsValue, bool)>>;
+
 /// The result of the last call to `next` of an [`IteratorRecord`].
 #[derive(Clone, Debug, Finalize, Trace)]
 enum LastResult {
@@ -585,14 +591,20 @@ impl IteratorRecord {
             return Ok(None);
         };
         let intrinsics = context.intrinsics().objects();
-        let step = if JsObject::equals(&next, intrinsics.array_iterator_next()) {
-            ArrayIterator::step_dense
+        let step: BuiltinStep = if JsObject::equals(&next, intrinsics.array_iterator_next()) {
+            |iterator, context| Ok(ArrayIterator::step_dense(iterator, context))
+        } else if JsObject::equals(&next, intrinsics.map_iterator_next()) {
+            |iterator, context| Ok(MapIterator::step(iterator, context))
+        } else if JsObject::equals(&next, intrinsics.set_iterator_next()) {
+            |iterator, context| Ok(SetIterator::step(iterator, context))
+        } else if JsObject::equals(&next, intrinsics.string_iterator_next()) {
+            StringIterator::step
         } else {
             return Ok(None);
         };
         // The checks of every call to a native function.
         context.check_runtime_limits()?;
-        Ok(step(&self.iterator, context))
+        step(&self.iterator, context)
     }
 
     /// `IteratorStepValue ( iteratorRecord )`

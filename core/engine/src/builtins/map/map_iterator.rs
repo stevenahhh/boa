@@ -53,9 +53,26 @@ pub(crate) struct MapIterator {
 
 impl IntrinsicObject for MapIterator {
     fn init(realm: &Realm) {
+        let next = BuiltInBuilder::callable_with_object(
+            realm,
+            realm
+                .intrinsics()
+                .objects()
+                .map_iterator_next()
+                .clone()
+                .into(),
+            Self::next,
+        )
+        .name(js_string!("next"))
+        .build();
+
         BuiltInBuilder::with_intrinsic::<Self>(realm)
             .prototype(realm.intrinsics().constructors().iterator().prototype())
-            .static_method(Self::next, js_string!("next"), 0)
+            .static_property(
+                js_string!("next"),
+                next,
+                Attribute::WRITABLE | Attribute::CONFIGURABLE,
+            )
             .static_property(
                 JsSymbol::to_string_tag(),
                 js_string!("Map Iterator"),
@@ -110,7 +127,22 @@ impl MapIterator {
             .as_ref()
             .and_then(JsObject::downcast_mut::<Self>)
             .ok_or_else(|| JsNativeError::typ().with_message("`this` is not a MapIterator"))?;
+        let (value, done) = map_iterator.advance(context);
+        Ok(create_iter_result_object(value, done, context))
+    }
 
+    /// Runs `%MapIteratorPrototype%.next` on `iterator` without creating the result object,
+    /// returning its `value` and `done`, or `None`, changing nothing, if `iterator` is not a
+    /// `MapIterator`. The steps of `next` run no user code.
+    pub(crate) fn step(iterator: &JsObject, context: &mut Context) -> Option<(JsValue, bool)> {
+        let mut map_iterator = iterator.downcast_mut::<Self>()?;
+        Some(map_iterator.advance(context))
+    }
+
+    /// The steps of `%MapIteratorPrototype%.next` after the `this` check, returning the `value`
+    /// and `done` of the result.
+    fn advance(&mut self, context: &mut Context) -> (JsValue, bool) {
+        let map_iterator = self;
         let item_kind = map_iterator.iteration_kind;
 
         if let Some(obj) = map_iterator.iterated_map.take() {
@@ -130,22 +162,17 @@ impl MapIterator {
             };
             if let Some((key, value)) = e {
                 let item = match item_kind {
-                    PropertyNameKind::Key => Ok(create_iter_result_object(key, false, context)),
-                    PropertyNameKind::Value => Ok(create_iter_result_object(value, false, context)),
+                    PropertyNameKind::Key => key,
+                    PropertyNameKind::Value => value,
                     PropertyNameKind::KeyAndValue => {
-                        let result = Array::create_array_from_list([key, value], context);
-                        Ok(create_iter_result_object(result.into(), false, context))
+                        Array::create_array_from_list([key, value], context).into()
                     }
                 };
                 map_iterator.iterated_map = Some(obj);
-                return item;
+                return (item, false);
             }
         }
 
-        Ok(create_iter_result_object(
-            JsValue::undefined(),
-            true,
-            context,
-        ))
+        (JsValue::undefined(), true)
     }
 }

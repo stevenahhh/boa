@@ -753,3 +753,158 @@ fn array_iteration_typed_out_of_bounds() {
         js_str!("TypeError"),
     )]);
 }
+
+// ── Iteration by the built-in Map, Set and String iterator next (fast path bail-outs) ──
+// Expected values come from node v26.7.0.
+
+#[test]
+fn builtin_iteration_map_delete_add_during() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const m = new Map([[1, "a"], [2, "b"], [3, "c"]]); let s = ""; for (const [k, v] of m) { s += k + v; if (k === 1) { m.delete(2); m.set(4, "d"); } } return s; })())"#,
+        js_str!("1a3c4d"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_map_clear_during() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const m = new Map([[1, 1], [2, 2]]); let n = 0; for (const x of m.keys()) { n++; m.clear(); } return n + ":" + m.size; })())"#,
+        js_str!("1:0"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_map_readd_during() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const m = new Map([[1, 1], [2, 2]]); let s = ""; for (const k of m.keys()) { s += k; if (k === 1) { m.delete(1); m.set(1, 1); } if (s.length > 5) break; } return s; })())"#,
+        js_str!("121111"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_map_next_replaced() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const P = Object.getPrototypeOf(new Map().entries()); const n = P.next; let c = 0; P.next = function () { c++; return n.call(this); }; let s = 0; for (const v of new Map([[1, 2]]).values()) s += v; P.next = n; return s + ":" + c; })())"#,
+        js_str!("2:2"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_map_next_wrong_this() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const n = Object.getPrototypeOf(new Map().entries()).next; const it = { [Symbol.iterator]() { return { next: n }; } }; try { for (const x of it); } catch (e) { return e.constructor.name; } })())"#,
+        js_str!("TypeError"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_map_entries_result() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const it = new Map([[1, 2]]).entries(); const r = it.next(); return Object.keys(r).join() + ":" + r.value.join() + ":" + it.next().done; })())"#,
+        js_str!("value,done:1,2:true"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_map_subclass_iterator() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { class M extends Map { *[Symbol.iterator]() { yield "own"; } } return [...new M([[1, 1]])].join() + "|" + [...new M([[1, 1]]).keys()].join(); })())"#,
+        js_str!("own|1"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_map_spread_from() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String(Array.from(new Map([["a", 1], ["b", 2]]).values()).join() + "|" + [...new Map([["a", 1]])].join(";"))"#,
+        js_str!("1,2|a,1"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_set_mutation_during() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const st = new Set([1, 2, 3]); let s = ""; for (const x of st) { s += x; if (x === 1) { st.delete(2); st.add(5); } } return s; })())"#,
+        js_str!("135"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_set_entries_keys() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String([...new Set(["a"]).entries()].join(";") + "|" + [...new Set(["a", "b"]).keys()].join())"#,
+        js_str!("a,a|a,b"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_set_next_replaced_during() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const P = Object.getPrototypeOf(new Set().values()); const n = P.next; let s = ""; for (const x of new Set([1, 2, 3])) { s += x; P.next = function () { return { done: true }; }; } P.next = n; return s; })())"#,
+        js_str!("123"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_set_iterator_exhausted() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const st = new Set([1]); const it = st.values(); [...it]; st.add(2); return String(it.next().done) + [...it].length; })())"#,
+        js_str!("true0"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_string_surrogates() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String([..."a\u{1F600}b\uD800c"].map(c => c.length).join())"#,
+        js_str!("1,2,1,1,1"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_string_empty() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String([...""].length + ":" + [..."x"].join())"#,
+        js_str!("0:x"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_string_object() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String([...new String("hi")].join())"#,
+        js_str!("h,i"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_string_iterator_replaced() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const d = Object.getOwnPropertyDescriptor(String.prototype, Symbol.iterator); String.prototype[Symbol.iterator] = function* () { yield "z"; }; const r = [..."abc"].join(); Object.defineProperty(String.prototype, Symbol.iterator, d); return r; })())"#,
+        js_str!("z"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_string_next_replaced() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const P = Object.getPrototypeOf(""[Symbol.iterator]()); const n = P.next; let c = 0; P.next = function () { c++; return n.call(this); }; const r = [..."ab"].join(); P.next = n; return r + ":" + c; })())"#,
+        js_str!("a,b:3"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_string_destructure() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const [a, , c, ...r] = "wxyz12"; return a + c + r.join(""); })())"#,
+        js_str!("wyz12"),
+    )]);
+}
+
+#[test]
+fn builtin_iteration_string_manual_next() {
+    run_test_actions([TestAction::assert_eq(
+        r#"String((() => { const it = "ab"[Symbol.iterator](); const x = it.next(); return x.value + x.done + it.next().value + it.next().done + it.next().done; })())"#,
+        js_str!("afalsebtruetrue"),
+    )]);
+}

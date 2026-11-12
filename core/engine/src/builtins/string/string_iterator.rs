@@ -32,9 +32,26 @@ pub(crate) struct StringIterator {
 
 impl IntrinsicObject for StringIterator {
     fn init(realm: &Realm) {
+        let next = BuiltInBuilder::callable_with_object(
+            realm,
+            realm
+                .intrinsics()
+                .objects()
+                .string_iterator_next()
+                .clone()
+                .into(),
+            Self::next,
+        )
+        .name(js_string!("next"))
+        .build();
+
         BuiltInBuilder::with_intrinsic::<Self>(realm)
             .prototype(realm.intrinsics().constructors().iterator().prototype())
-            .static_method(Self::next, js_string!("next"), 0)
+            .static_property(
+                js_string!("next"),
+                next,
+                Attribute::WRITABLE | Attribute::CONFIGURABLE,
+            )
             .static_property(
                 JsSymbol::to_string_tag(),
                 js_string!("String Iterator"),
@@ -73,24 +90,36 @@ impl StringIterator {
             .as_ref()
             .and_then(JsObject::downcast_mut::<Self>)
             .ok_or_else(|| JsNativeError::typ().with_message("`this` is not an ArrayIterator"))?;
+        let (value, done) = string_iterator.advance(context)?;
+        Ok(create_iter_result_object(value, done, context))
+    }
 
+    /// Runs `%StringIteratorPrototype%.next` on `iterator` without creating the result object,
+    /// returning its `value` and `done`, or `None`, changing nothing, if `iterator` is not a
+    /// `StringIterator`. The steps of `next` run no user code.
+    pub(crate) fn step(
+        iterator: &JsObject,
+        context: &mut Context,
+    ) -> JsResult<Option<(JsValue, bool)>> {
+        let Some(mut string_iterator) = iterator.downcast_mut::<Self>() else {
+            return Ok(None);
+        };
+        string_iterator.advance(context).map(Some)
+    }
+
+    /// The steps of `%StringIteratorPrototype%.next` after the `this` check, returning the
+    /// `value` and `done` of the result.
+    fn advance(&mut self, context: &mut Context) -> JsResult<(JsValue, bool)> {
+        let string_iterator = self;
         if string_iterator.string.is_empty() {
-            return Ok(create_iter_result_object(
-                JsValue::undefined(),
-                true,
-                context,
-            ));
+            return Ok((JsValue::undefined(), true));
         }
         let native_string = &string_iterator.string;
         let len = native_string.len();
         let position = string_iterator.next_index;
         if position >= len {
             string_iterator.string = js_string!();
-            return Ok(create_iter_result_object(
-                JsValue::undefined(),
-                true,
-                context,
-            ));
+            return Ok((JsValue::undefined(), true));
         }
         let code_point = native_string.code_point_at(position);
         string_iterator.next_index += code_point.code_unit_count();
@@ -99,6 +128,6 @@ impl StringIterator {
             &[position.into(), string_iterator.next_index.into()],
             context,
         )?;
-        Ok(create_iter_result_object(result_string, false, context))
+        Ok((result_string, false))
     }
 }
