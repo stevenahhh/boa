@@ -160,14 +160,14 @@ impl InlineCache {
     ///
     /// An entry is the shape of an object, the slot of the property and, for a property found on
     /// the prototype, the shape of that prototype (the holder). It is used only while the object
-    /// has the entry's shape and the holder has the holder's shape. That keeps the slot correct
-    /// because a shape determines its object's prototype and where its own properties are stored:
-    /// shared shapes never change, a unique shape changes in place only when it gains a property
-    /// or when a property's attributes change without turning it into an accessor or back,
-    /// neither of which moves a slot, and every other change gives the object a new shape. A
-    /// property gained in place can shadow one of the prototype, so properties found on the
-    /// prototype are not cached for objects with unique shapes. Shapes are held weakly, and a
-    /// shape allocated at the address of a collected one does not match.
+    /// has the entry's shape and the holder has the holder's shape. That keeps the slot and its
+    /// attributes correct because a shape determines its object's prototype and the slots and
+    /// attributes of its own properties: shared shapes never change, a unique shape changes in
+    /// place only when it gains a property, which moves no slot and changes no attributes, and
+    /// every other change gives the object a new shape. A property gained in place can shadow one
+    /// of the prototype, so properties found on the prototype are not cached for objects with
+    /// unique shapes. Shapes are held weakly, and a shape allocated at the address of a collected
+    /// one does not match.
     ///
     /// Opportunistically cleans up stale weak shape references and outdated holder shapes during
     /// lookup.

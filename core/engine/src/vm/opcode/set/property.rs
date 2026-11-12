@@ -38,22 +38,25 @@ fn set_by_name(
     });
     drop(object_borrowed);
     if let Some((slot, setter)) = cached {
-        if let Some(setter) = setter {
-            if slot.attributes.has_set() && setter.is_object() {
-                setter.as_object().expect("should contain setter").call(
-                    receiver,
-                    std::slice::from_ref(&value),
-                    context,
-                )?;
+        match setter {
+            // An assignment through an accessor without a setter fails, which throws in strict
+            // code: the slow path below does that.
+            Some(setter) => {
+                if slot.attributes.has_set()
+                    && let Some(setter) = setter.as_object()
+                {
+                    setter.call(receiver, std::slice::from_ref(&value), context)?;
+                    return Ok(());
+                }
             }
-            return Ok(());
-        }
-        // `OrdinarySet` never caches a data property found on the prototype: assigning to it
-        // creates a property on the receiver.
-        if !slot.attributes.contains(SlotAttributes::PROTOTYPE) {
-            let mut object_borrowed = object.borrow_mut();
-            object_borrowed.properties_mut().storage[slot.index as usize] = value.clone();
-            return Ok(());
+            // `OrdinarySet` never caches a data property found on the prototype: assigning to it
+            // creates a property on the receiver.
+            None if !slot.attributes.contains(SlotAttributes::PROTOTYPE) => {
+                let mut object_borrowed = object.borrow_mut();
+                object_borrowed.properties_mut().storage[slot.index as usize] = value.clone();
+                return Ok(());
+            }
+            None => {}
         }
     }
 

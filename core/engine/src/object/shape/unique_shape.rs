@@ -147,9 +147,13 @@ impl UniqueShape {
         if slot.attributes.width_match(key.attributes) {
             slot.attributes = key.attributes;
             property_table.keys[index].1.attributes = key.attributes;
-            // TODO: invalidate the pointer.
+
+            // No slot moves, but the attributes changed: we still need to create a new unique
+            // shape, to invalidate any pointers to this shape i.e inline caches.
+            let property_table = std::mem::take(&mut *property_table);
+            let prototype = self.inner.prototype.borrow_mut().take();
             return ChangeTransition {
-                shape: self.clone().into(),
+                shape: Self::new(prototype, property_table).into(),
                 action: ChangeTransitionAction::Nothing,
             };
         }

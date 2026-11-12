@@ -3,7 +3,7 @@ use boa_parser::Source;
 use indoc::indoc;
 
 use crate::{
-    Context, JsObject, JsResult, JsValue, TestAction,
+    Context, JsNativeErrorKind, JsObject, JsResult, JsValue, TestAction,
     builtins::{OrdinaryObject, function::OrdinaryFunction},
     js_string,
     object::{
@@ -805,6 +805,127 @@ const COLLECTED_CHAIN: &str = indoc! {r#"
     for (let i = 0; i < 5; i++) read();
     receiver = null;
 "#};
+
+/// Writes `Math.x` from a sloppy and a strict function and reads it until all three are cached.
+/// `Math` has a unique shape.
+const WARM_UNIQUE_WRITES: &str = indoc! {r#"
+    Math.x = 49;
+    function write(v) { Math.x = v; }
+    function strictWrite(v) { "use strict"; Math.x = v; }
+    function read() { return Math.x; }
+    for (let i = 0; i < 5; i++) { write(49); strictWrite(49); read(); }
+"#};
+
+#[test]
+fn making_a_property_of_a_unique_shape_read_only_stops_cached_writes() {
+    for change in [
+        r#"Object.defineProperty(Math, "x", { writable: false });"#,
+        "Object.freeze(Math);",
+    ] {
+        run_test_actions([
+            TestAction::run(WARM_UNIQUE_WRITES),
+            TestAction::run(change),
+            TestAction::run("write(999);"),
+            TestAction::assert_eq("read()", 49),
+            TestAction::assert_native_error(
+                "strictWrite(1000)",
+                JsNativeErrorKind::Type,
+                "cannot set non-writable property: x",
+            ),
+            TestAction::assert_eq("read()", 49),
+        ]);
+    }
+}
+
+#[test]
+fn enumerable_and_configurable_changes_of_a_unique_shape_keep_cached_accesses_correct() {
+    run_test_actions([
+        TestAction::run(indoc! {r#"
+            Math.x = 1;
+            function write(v) { Math.x = v; }
+            function read() { return Math.x; }
+            for (let i = 0; i < 5; i++) { write(i); read(); }
+            Object.defineProperty(Math, "x", { enumerable: false });
+            write(5);
+            const afterEnumerable = read();
+            Object.defineProperty(Math, "x", { configurable: false });
+            write(6);
+        "#}),
+        TestAction::assert_eq(
+            r#"afterEnumerable + " " + read() + " " + Object.keys(Math).includes("x") + " " + delete Math.x + " " + Math.x"#,
+            js_string!("5 6 false false 6"),
+        ),
+    ]);
+}
+
+#[test]
+fn replacing_an_accessor_is_seen_by_cached_accesses() {
+    run_test_actions([
+        TestAction::run(indoc! {r#"
+            const log = [];
+            const shared = { get acc() { return "shared"; }, set acc(v) { log.push("shared:" + v); } };
+            Object.defineProperty(Math, "acc", { get() { return "unique"; }, set(v) { log.push("unique:" + v); }, configurable: true });
+            Object.defineProperty(Object.prototype, "inherited", { get() { return "proto"; }, set(v) { log.push("proto:" + v); }, configurable: true });
+            const plain = {};
+            function read(o) { return o.acc; }
+            function readInherited() { return plain.inherited; }
+            function strictWrite(o, v) { "use strict"; o.acc = v; }
+            function strictWriteInherited(v) { "use strict"; plain.inherited = v; }
+            for (let i = 0; i < 5; i++) { read(shared); read(Math); readInherited(); strictWrite(shared, i); strictWrite(Math, i); strictWriteInherited(i); }
+            log.length = 0;
+            Object.defineProperty(shared, "acc", { get() { return "shared2"; }, set: undefined });
+            Object.defineProperty(Math, "acc", { get() { return "unique2"; }, set: undefined });
+            Object.defineProperty(Object.prototype, "inherited", { get() { return "proto2"; }, set: undefined });
+        "#}),
+        TestAction::assert_eq(
+            r#"read(shared) + " " + read(Math) + " " + readInherited()"#,
+            js_string!("shared2 unique2 proto2"),
+        ),
+        TestAction::assert_native_error(
+            "strictWrite(shared, 9)",
+            JsNativeErrorKind::Type,
+            "cannot set non-writable property: acc",
+        ),
+        TestAction::assert_native_error(
+            "strictWrite(Math, 9)",
+            JsNativeErrorKind::Type,
+            "cannot set non-writable property: acc",
+        ),
+        TestAction::assert_native_error(
+            "strictWriteInherited(9)",
+            JsNativeErrorKind::Type,
+            "cannot set non-writable property: inherited",
+        ),
+        TestAction::assert_eq(
+            r#"log.length + " " + Object.hasOwn(plain, "inherited")"#,
+            js_string!("0 false"),
+        ),
+    ]);
+}
+
+#[test]
+fn deleting_a_property_of_a_unique_shape_keeps_cached_accesses_correct() {
+    run_test_actions([
+        TestAction::run(indoc! {r#"
+            Math.x = 1;
+            Math.y = 2;
+            function write(v) { Math.y = v; }
+            function read() { return Math.y; }
+            for (let i = 0; i < 5; i++) { write(2); read(); }
+            delete Math.x;
+            const afterEarlier = read();
+            write(3);
+            const afterWrite = read();
+            delete Math.y;
+            const afterOwn = String(read());
+            write(4);
+        "#}),
+        TestAction::assert_eq(
+            r#"afterEarlier + " " + afterWrite + " " + afterOwn + " " + read()"#,
+            js_string!("2 3 undefined 4"),
+        ),
+    ]);
+}
 
 #[test]
 fn a_collected_holder_does_not_satisfy_a_prototype_hit() {
