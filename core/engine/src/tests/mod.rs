@@ -613,3 +613,13 @@ fn fix_index_access_in_finally_jump_table_in_function() {
         })()
     "#})]);
 }
+
+#[test]
+fn declaration_list_with_line_terminator_before_comma() {
+    run_test_actions([
+        TestAction::assert_eq("var a = 1\n, b = 2; a * 10 + b", 12),
+        TestAction::assert_eq("let c = 3\n, d = 4; c * 10 + d", 34),
+        TestAction::assert_eq("const e = 5/*\n*/, f = 6; e * 10 + f", 56),
+        TestAction::assert_eq("(() => { const g = 7\n, h = 8; return g * 10 + h; })()", 78),
+    ]);
+}

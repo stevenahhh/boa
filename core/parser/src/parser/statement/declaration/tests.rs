@@ -899,3 +899,73 @@ fn await_using_valid_identifiers() {
         result.err()
     );
 }
+
+/// Builds `a = 5` on line 1 (starting at `a_col`) and `b = 6` on line 2 (starting at `b_col`).
+fn bindings_split_before_comma(interner: &mut Interner, a_col: u32, b_col: u32) -> Vec<Variable> {
+    vec![
+        Variable::from_identifier(
+            Identifier::new(
+                interner.get_or_intern_static("a", utf16!("a")),
+                Span::new((1, a_col), (1, a_col + 1)),
+            ),
+            Some(Literal::new(5, Span::new((1, a_col + 4), (1, a_col + 5))).into()),
+        ),
+        Variable::from_identifier(
+            Identifier::new(
+                interner.get_or_intern_static("b", utf16!("b")),
+                Span::new((2, b_col), (2, b_col + 1)),
+            ),
+            Some(Literal::new(6, Span::new((2, b_col + 4), (2, b_col + 5))).into()),
+        ),
+    ]
+}
+
+/// The second line of each source and the column where `b` starts on it.
+const SPLIT_BEFORE_COMMA: [(&str, u32); 2] = [("\n, b = 6;", 3), ("/*\n*/, b = 6;", 5)];
+
+/// A line terminator before the comma must not end a `var` declaration list.
+#[test]
+fn var_declaration_line_terminator_before_comma() {
+    for (rest, b_col) in SPLIT_BEFORE_COMMA {
+        let interner = &mut Interner::default();
+        let expected = bindings_split_before_comma(interner, 5, b_col);
+        check_script_parser(
+            &format!("var a = 5{rest}"),
+            vec![Statement::Var(VarDeclaration(expected.try_into().unwrap())).into()],
+            interner,
+        );
+    }
+}
+
+/// A line terminator before the comma must not end a `let` declaration list.
+#[test]
+fn let_declaration_line_terminator_before_comma() {
+    for (rest, b_col) in SPLIT_BEFORE_COMMA {
+        let interner = &mut Interner::default();
+        let expected = bindings_split_before_comma(interner, 5, b_col);
+        check_script_parser(
+            &format!("let a = 5{rest}"),
+            vec![
+                Declaration::Lexical(LexicalDeclaration::Let(expected.try_into().unwrap())).into(),
+            ],
+            interner,
+        );
+    }
+}
+
+/// A line terminator before the comma must not end a `const` declaration list.
+#[test]
+fn const_declaration_line_terminator_before_comma() {
+    for (rest, b_col) in SPLIT_BEFORE_COMMA {
+        let interner = &mut Interner::default();
+        let expected = bindings_split_before_comma(interner, 7, b_col);
+        check_script_parser(
+            &format!("const a = 5{rest}"),
+            vec![
+                Declaration::Lexical(LexicalDeclaration::Const(expected.try_into().unwrap()))
+                    .into(),
+            ],
+            interner,
+        );
+    }
+}
