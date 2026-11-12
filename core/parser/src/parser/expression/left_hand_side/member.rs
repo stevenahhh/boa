@@ -6,6 +6,7 @@
 //! [spec]: https://tc39.es/ecma262/#prod-MemberExpression
 
 use super::arguments::Arguments;
+use crate::parser::CHAIN_LINK_STACK;
 use crate::{
     Error,
     lexer::{InputElement, TokenKind, token::ContainsEscapeSequence},
@@ -230,13 +231,36 @@ where
                 .parse(cursor, interner)?,
         };
 
-        let FormalParameterListOrExpression::Expression(mut lhs) = lhs else {
+        let FormalParameterListOrExpression::Expression(lhs) = lhs else {
             return Ok(lhs);
         };
 
+        self.parse_accesses(lhs, cursor, interner)
+    }
+}
+impl MemberExpression {
+    /// Parses the property accesses and tagged templates after `lhs`.
+    ///
+    /// It stays out of the frame of `parse`, which every level of nesting goes through.
+    #[inline(never)]
+    fn parse_accesses<R>(
+        self,
+        mut lhs: ast::Expression,
+        cursor: &mut Cursor<R>,
+        interner: &mut Interner,
+    ) -> ParseResult<FormalParameterListOrExpression>
+    where
+        R: ReadChar,
+    {
         cursor.set_goal(InputElement::TemplateTail);
 
-        while let Some(tok) = cursor.peek(0, interner)? {
+        let mut links = 0;
+        loop {
+            links += 1;
+            cursor.check_stack_for(links * CHAIN_LINK_STACK)?;
+            let Some(tok) = cursor.peek(0, interner)? else {
+                break;
+            };
             match tok.kind() {
                 TokenKind::Punctuator(Punctuator::Dot) => {
                     cursor

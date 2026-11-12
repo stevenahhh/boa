@@ -112,6 +112,10 @@ impl RuntimeLimits {
     ///
     /// Default is `1024 * 1024` bytes, half the stack of a thread spawned by the Rust standard
     /// library.
+    ///
+    /// Parsing and the builtins that recurse on nested values, such as `JSON.stringify`, check the
+    /// native stack against the end of the thread's stack instead, on the platforms that report it
+    /// (macOS and Linux), and against this limit elsewhere.
     #[inline]
     #[must_use]
     pub const fn native_stack_limit(&self) -> usize {

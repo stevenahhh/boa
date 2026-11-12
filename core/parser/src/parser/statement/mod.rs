@@ -422,24 +422,39 @@ where
     type Output = ast::StatementListItem;
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
-        cursor.check_stack()?;
-        let tok = cursor.peek(0, interner).or_abrupt()?;
+        /// What the first token of an item may start.
+        enum Start {
+            Declaration,
+            Let,
+            Await,
+            Async,
+            Statement,
+        }
 
-        match tok.kind().clone() {
+        cursor.check_stack()?;
+        // Classifying the token instead of cloning it keeps the frame small: every level of
+        // nested blocks goes through it.
+        let start = match cursor.peek(0, interner).or_abrupt()?.kind() {
             TokenKind::Keyword((
                 Keyword::Function | Keyword::Class | Keyword::Const | Keyword::Using,
                 _,
-            )) => Declaration::new(self.allow_yield, self.allow_await)
+            )) => Start::Declaration,
+            TokenKind::Keyword((Keyword::Let, false)) => Start::Let,
+            TokenKind::Keyword((Keyword::Await, false)) => Start::Await,
+            TokenKind::Keyword((Keyword::Async, false)) => Start::Async,
+            _ => Start::Statement,
+        };
+
+        match start {
+            Start::Declaration => Declaration::new(self.allow_yield, self.allow_await)
                 .parse(cursor, interner)
                 .map(ast::StatementListItem::from),
-            TokenKind::Keyword((Keyword::Let, false))
-                if allowed_token_after_let(cursor.peek(1, interner)?) =>
-            {
+            Start::Let if allowed_token_after_let(cursor.peek(1, interner)?) => {
                 Declaration::new(self.allow_yield, self.allow_await)
                     .parse(cursor, interner)
                     .map(ast::StatementListItem::from)
             }
-            TokenKind::Keyword((Keyword::Await, false)) => {
+            Start::Await => {
                 // Check if this is `await using`
                 // Per spec, there must be [no LineTerminator here] between `await` and `using`
                 if let Some(next_tok) = cursor.peek_no_skip_line_term(1, interner)?
@@ -455,7 +470,7 @@ where
                     .parse(cursor, interner)
                     .map(ast::StatementListItem::from)
             }
-            TokenKind::Keyword((Keyword::Async, false)) => {
+            Start::Async => {
                 let skip_n = if cursor.peek_is_line_terminator(0, interner).or_abrupt()? {
                     2
                 } else {

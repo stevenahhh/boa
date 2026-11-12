@@ -20,7 +20,7 @@ use crate::{
     source::ReadChar,
 };
 use boa_ast::{
-    Punctuator, Spanned,
+    Position, Punctuator, Spanned,
     operations::{lexically_declared_names_legacy, var_declared_names},
     statement,
 };
@@ -96,35 +96,49 @@ where
         .map(|(statement_list, end)| (statement::Block::from(statement_list), end))?;
         cursor.expect(Punctuator::CloseBlock, "block", interner)?;
 
-        // It is a Syntax Error if the LexicallyDeclaredNames of StatementList contains any duplicate
-        // entries, unless the source text matched by this production is not strict mode code and the
-        // duplicate entries are only bound by FunctionDeclarations.
-        let mut lexical_names = FxHashMap::default();
-        for (name, is_fn) in lexically_declared_names_legacy(&statement_list) {
-            if let Some(is_fn_previous) = lexical_names.insert(name, is_fn) {
-                match (cursor.strict(), is_fn, is_fn_previous) {
-                    (false, true, true) => {}
-                    _ => {
-                        return Err(Error::general(
-                            "lexical name declared multiple times",
-                            position,
-                        ));
-                    }
-                }
-            }
-        }
-
-        // It is a Syntax Error if any element of the LexicallyDeclaredNames of StatementList also
-        // occurs in the VarDeclaredNames of StatementList.
-        for name in var_declared_names(&statement_list) {
-            if lexical_names.contains_key(&name) {
-                return Err(Error::general(
-                    "lexical name declared in var names",
-                    position,
-                ));
-            }
-        }
+        check_declared_names(&statement_list, position, cursor.strict())?;
 
         Ok(statement_list)
     }
+}
+
+/// The early errors of the declarations of a block that starts at `position`.
+///
+/// They stay out of the frame of `Block::parse`, which every level of nested blocks goes through.
+#[inline(never)]
+fn check_declared_names(
+    statement_list: &statement::Block,
+    position: Position,
+    strict: bool,
+) -> ParseResult<()> {
+    // It is a Syntax Error if the LexicallyDeclaredNames of StatementList contains any duplicate
+    // entries, unless the source text matched by this production is not strict mode code and the
+    // duplicate entries are only bound by FunctionDeclarations.
+    let mut lexical_names = FxHashMap::default();
+    for (name, is_fn) in lexically_declared_names_legacy(statement_list) {
+        if let Some(is_fn_previous) = lexical_names.insert(name, is_fn) {
+            match (strict, is_fn, is_fn_previous) {
+                (false, true, true) => {}
+                _ => {
+                    return Err(Error::general(
+                        "lexical name declared multiple times",
+                        position,
+                    ));
+                }
+            }
+        }
+    }
+
+    // It is a Syntax Error if any element of the LexicallyDeclaredNames of StatementList also
+    // occurs in the VarDeclaredNames of StatementList.
+    for name in var_declared_names(statement_list) {
+        if lexical_names.contains_key(&name) {
+            return Err(Error::general(
+                "lexical name declared in var names",
+                position,
+            ));
+        }
+    }
+
+    Ok(())
 }

@@ -63,6 +63,23 @@ where
         self.stack_floor = stack_position().saturating_sub(bytes);
     }
 
+    /// The lowest native stack address the parser may reach, or `0` for no limit.
+    pub(super) const fn stack_floor(&self) -> usize {
+        self.stack_floor
+    }
+
+    /// Fails once the native stack is within `bytes` of the limit of [`Self::set_stack_limit`].
+    ///
+    /// A loop that builds one level of the tree per iteration, instead of recursing, charges each
+    /// level with it, because the passes over the tree recurse once per level.
+    #[inline]
+    pub(super) fn check_stack_for(&self, bytes: usize) -> ParseResult<()> {
+        if stack_position().saturating_sub(bytes) < self.stack_floor {
+            return Err(Error::StackOverflow);
+        }
+        Ok(())
+    }
+
     /// Fails once the native stack has grown past the limit of [`Self::set_stack_limit`].
     ///
     /// The parser descends one level of recursion for each level of nesting in the source, and so
@@ -336,9 +353,31 @@ where
     }
 }
 
-/// Returns an address on the native stack at its current end.
+/// Returns an address on the native stack at its current end: the stack pointer where it can be
+/// read without a stack slot.
 #[inline]
 fn stack_position() -> usize {
-    let marker = 0u8;
-    std::hint::black_box(std::ptr::from_ref(&marker)).addr()
+    #[cfg(target_arch = "aarch64")]
+    {
+        let sp: usize;
+        // SAFETY: Reading the stack pointer into a register touches no memory.
+        unsafe {
+            core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack, preserves_flags));
+        }
+        sp
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let sp: usize;
+        // SAFETY: Reading the stack pointer into a register touches no memory.
+        unsafe {
+            core::arch::asm!("mov {}, rsp", out(reg) sp, options(nomem, nostack, preserves_flags));
+        }
+        sp
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        let marker = 0u8;
+        std::hint::black_box(std::ptr::from_ref(&marker)).addr()
+    }
 }

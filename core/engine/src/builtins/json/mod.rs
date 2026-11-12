@@ -302,6 +302,7 @@ impl Json {
             let spanned_source_text = SpannedSourceText::new_source_only(
                 crate::spanned_source_text::SourceText::new(source_text),
             );
+            crate::vm::clear_compile_stack_overflow();
             let mut compiler = ByteCompiler::new(
                 js_string!("<json>"),
                 script.strict(),
@@ -316,6 +317,7 @@ impl Json {
                 SourcePath::Json,
             );
             compiler.compile_statement_list(script.statements(), true, false);
+            crate::vm::take_compile_stack_overflow()?;
             Gc::new(compiler.finish())
         };
 

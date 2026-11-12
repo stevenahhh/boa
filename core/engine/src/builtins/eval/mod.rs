@@ -275,6 +275,8 @@ impl Eval {
         let source_text = SourceText::new(source);
         let spanned_source_text = SpannedSourceText::new_source_only(source_text);
 
+        let stack_floor = context.native_stack_floor();
+        crate::vm::clear_compile_stack_overflow();
         let mut compiler = ByteCompiler::new(
             js_string!("<eval>"),
             body.strict(),
@@ -307,19 +309,27 @@ impl Eval {
                 .clone_from(&annex_b_function_names);
         }
 
-        let bindings = body
-            .analyze_scope_eval(
+        let analysis = {
+            let _limit = boa_ast::scope_analyzer::limit_native_stack(stack_floor);
+            body.analyze_scope_eval(
                 strict,
                 &variable_scope,
                 &lexical_scope,
                 &annex_b_function_names,
                 compiler.interner(),
             )
-            .map_err(|e| JsNativeError::syntax().with_message(e))?;
+        };
+        let bindings = analysis.map_err(|e| {
+            if e == boa_ast::scope_analyzer::NESTED_TOO_DEEPLY {
+                return crate::vm::stack_overflow();
+            }
+            JsNativeError::syntax().with_message(e).into()
+        })?;
 
         compiler.eval_declaration_instantiation(&body, strict, &variable_scope, bindings);
 
         compiler.compile_statement_list(body.statements(), true, false);
+        crate::vm::take_compile_stack_overflow()?;
 
         let code_block = Gc::new(compiler.finish());
 

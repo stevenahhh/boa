@@ -153,119 +153,15 @@ where
 
         let mut lhs: FormalParameterListOrExpression =
             if let Some(start) = is_keyword_call(Keyword::Super, cursor, interner)? {
-                cursor.advance(interner);
-                let (args, args_span) =
-                    Arguments::new(self.allow_yield, self.allow_await).parse(cursor, interner)?;
-                SuperCall::new(args, Span::new(start, args_span.end())).into()
+                self.parse_super_call(start, cursor, interner)?
             } else if let Some(start) = is_keyword_call(Keyword::Import, cursor, interner)? {
-                // Plain `import(...)` call
-                cursor.advance(interner);
-                // `(`
-                cursor.advance(interner);
-
-                let specifier = AssignmentExpression::new(true, self.allow_yield, self.allow_await)
-                    .parse(cursor, interner)?;
-
-                let options =
-                    if cursor
-                        .next_if(TokenKind::Punctuator(Punctuator::Comma), interner)?
-                        .is_some()
-                    {
-                        if cursor.peek(0, interner)?.is_some_and(|t| {
-                            t.kind() == &TokenKind::Punctuator(Punctuator::CloseParen)
-                        }) {
-                            None
-                        } else {
-                            let opts =
-                                AssignmentExpression::new(true, self.allow_yield, self.allow_await)
-                                    .parse(cursor, interner)?;
-                            if cursor.peek(0, interner)?.is_some_and(|t| {
-                                t.kind() == &TokenKind::Punctuator(Punctuator::Comma)
-                            }) {
-                                cursor.advance(interner);
-                            }
-                            Some(opts)
-                        }
-                    } else {
-                        None
-                    };
-
-                let end = cursor
-                    .expect(
-                        TokenKind::Punctuator(Punctuator::CloseParen),
-                        "import call",
-                        interner,
-                    )?
-                    .span()
-                    .end();
-
-                CallExpressionTail::new(
-                    self.allow_yield,
-                    self.allow_await,
-                    ImportCall::new(
-                        specifier,
-                        options,
-                        ImportPhase::Evaluation,
-                        Span::new(start, end),
-                    )
-                    .into(),
-                )
-                .parse(cursor, interner)?
-                .into()
+                // `import` `(`
+                self.parse_import_call(start, ImportPhase::Evaluation, 2, cursor, interner)?
+                    .into()
             } else if let Some((start, phase)) = is_import_phase_call(cursor, interner)? {
-                // `import.defer(...)` or `import.source(...)` call
-                // Consume `import`
-                cursor.advance(interner);
-                // Consume `.`
-                cursor.advance(interner);
-                // Consume `defer` or `source`
-                cursor.advance(interner);
-                // Consume `(`
-                cursor.advance(interner);
-
-                let specifier = AssignmentExpression::new(true, self.allow_yield, self.allow_await)
-                    .parse(cursor, interner)?;
-
-                let options =
-                    if cursor
-                        .next_if(TokenKind::Punctuator(Punctuator::Comma), interner)?
-                        .is_some()
-                    {
-                        if cursor.peek(0, interner)?.is_some_and(|t| {
-                            t.kind() == &TokenKind::Punctuator(Punctuator::CloseParen)
-                        }) {
-                            None
-                        } else {
-                            let opts =
-                                AssignmentExpression::new(true, self.allow_yield, self.allow_await)
-                                    .parse(cursor, interner)?;
-                            if cursor.peek(0, interner)?.is_some_and(|t| {
-                                t.kind() == &TokenKind::Punctuator(Punctuator::Comma)
-                            }) {
-                                cursor.advance(interner);
-                            }
-                            Some(opts)
-                        }
-                    } else {
-                        None
-                    };
-
-                let end = cursor
-                    .expect(
-                        TokenKind::Punctuator(Punctuator::CloseParen),
-                        "import call",
-                        interner,
-                    )?
-                    .span()
-                    .end();
-
-                CallExpressionTail::new(
-                    self.allow_yield,
-                    self.allow_await,
-                    ImportCall::new(specifier, options, phase, Span::new(start, end)).into(),
-                )
-                .parse(cursor, interner)?
-                .into()
+                // `import` `.` `defer` or `source` `(`
+                self.parse_import_call(start, phase, 4, cursor, interner)?
+                    .into()
             } else {
                 let member = MemberExpression::new(self.allow_yield, self.allow_await)
                     .parse(cursor, interner)?;
@@ -297,5 +193,88 @@ where
         }
 
         Ok(lhs)
+    }
+}
+
+// Calls of `super` and `import` stay out of the frame of `parse`, which every level of nesting
+// goes through.
+impl LeftHandSideExpression {
+    /// Parses the call `super(...)` that starts at `start`.
+    #[inline(never)]
+    fn parse_super_call<R>(
+        self,
+        start: Position,
+        cursor: &mut Cursor<R>,
+        interner: &mut Interner,
+    ) -> ParseResult<FormalParameterListOrExpression>
+    where
+        R: ReadChar,
+    {
+        cursor.advance(interner);
+        let (args, args_span) =
+            Arguments::new(self.allow_yield, self.allow_await).parse(cursor, interner)?;
+        Ok(SuperCall::new(args, Span::new(start, args_span.end())).into())
+    }
+
+    /// Parses the import call of phase `phase` that starts at `start`, after the `tokens` tokens
+    /// up to its `(`.
+    #[inline(never)]
+    fn parse_import_call<R>(
+        self,
+        start: Position,
+        phase: ImportPhase,
+        tokens: usize,
+        cursor: &mut Cursor<R>,
+        interner: &mut Interner,
+    ) -> ParseResult<boa_ast::Expression>
+    where
+        R: ReadChar,
+    {
+        for _ in 0..tokens {
+            cursor.advance(interner);
+        }
+
+        let specifier = AssignmentExpression::new(true, self.allow_yield, self.allow_await)
+            .parse(cursor, interner)?;
+
+        let options = if cursor
+            .next_if(TokenKind::Punctuator(Punctuator::Comma), interner)?
+            .is_some()
+        {
+            if cursor
+                .peek(0, interner)?
+                .is_some_and(|t| t.kind() == &TokenKind::Punctuator(Punctuator::CloseParen))
+            {
+                None
+            } else {
+                let opts = AssignmentExpression::new(true, self.allow_yield, self.allow_await)
+                    .parse(cursor, interner)?;
+                if cursor
+                    .peek(0, interner)?
+                    .is_some_and(|t| t.kind() == &TokenKind::Punctuator(Punctuator::Comma))
+                {
+                    cursor.advance(interner);
+                }
+                Some(opts)
+            }
+        } else {
+            None
+        };
+
+        let end = cursor
+            .expect(
+                TokenKind::Punctuator(Punctuator::CloseParen),
+                "import call",
+                interner,
+            )?
+            .span()
+            .end();
+
+        CallExpressionTail::new(
+            self.allow_yield,
+            self.allow_await,
+            ImportCall::new(specifier, options, phase, Span::new(start, end)).into(),
+        )
+        .parse(cursor, interner)
     }
 }

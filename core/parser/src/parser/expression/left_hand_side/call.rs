@@ -8,6 +8,7 @@
 //! [spec]: https://tc39.es/ecma262/#prod-CallExpression
 
 use super::arguments::Arguments;
+use crate::parser::CHAIN_LINK_STACK;
 use crate::{
     Error,
     lexer::TokenKind,
@@ -119,7 +120,10 @@ where
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
         let mut lhs = self.call;
 
+        let mut links = 0;
         while let Some(token) = cursor.peek(0, interner)?.cloned() {
+            links += 1;
+            cursor.check_stack_for(links * CHAIN_LINK_STACK)?;
             let lhs_span_start = lhs.span().start();
             match token.kind() {
                 TokenKind::Punctuator(Punctuator::OpenParen) => {

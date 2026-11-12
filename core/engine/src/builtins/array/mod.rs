@@ -1791,7 +1791,6 @@ impl Array {
             depth_num,
             None,
             &JsValue::undefined(),
-            context.native_stack_floor(),
             context,
         )?;
 
@@ -1839,7 +1838,6 @@ impl Array {
             1,
             Some(&mapper_function),
             args.get_or_undefined(1),
-            context.native_stack_floor(),
             context,
         )?;
 
@@ -1862,11 +1860,10 @@ impl Array {
         depth: u64,
         mapper_function: Option<&JsObject>,
         this_arg: &JsValue,
-        stack_floor: usize,
         context: &mut Context,
     ) -> JsResult<u64> {
         // Each level of nested arrays recurses once; see `Context::native_stack_floor`.
-        check_native_stack(stack_floor)?;
+        check_native_stack(context.native_stack_floor())?;
 
         // 1. Assert target is Object
         // 2. Assert source is Object
@@ -1935,7 +1932,6 @@ impl Array {
                         new_depth,
                         None,
                         &JsValue::undefined(),
-                        stack_floor,
                         context,
                     )?;
 

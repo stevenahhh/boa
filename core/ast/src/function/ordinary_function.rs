@@ -284,7 +284,7 @@ impl FunctionExpression {
     ) -> Result<(), &'static str> {
         collect_bindings(self, strict, false, scope, interner)?;
         analyze_binding_escapes(self, false, scope.clone(), interner)?;
-        optimize_scope_indices_function_constructor(self, scope);
+        optimize_scope_indices_function_constructor(self, scope)?;
         Ok(())
     }
 }

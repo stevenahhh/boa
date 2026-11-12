@@ -7,7 +7,7 @@
 #[cfg(feature = "annex-b")]
 use crate::operations::annex_b_function_declarations_names;
 use crate::{
-    Declaration, Module, Script, StatementListItem, ToJsString,
+    Declaration, Module, Script, Statement, StatementListItem, ToJsString,
     declaration::{Binding, ExportDeclaration, LexicalDeclaration, VariableList},
     expression::{Call, Expression, Identifier, literal::ObjectMethodDefinition},
     function::{
@@ -31,7 +31,74 @@ use crate::{
 };
 use boa_interner::{Interner, Sym};
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::ops::ControlFlow;
+use std::{cell::Cell, ops::ControlFlow};
+
+/// The reason a scope analysis fails when the source nests too deeply for the native stack; see
+/// [`limit_native_stack`].
+pub const NESTED_TOO_DEEPLY: &str = "the source nests too deeply";
+
+thread_local! {
+    /// The lowest native stack address the scope analysis may reach, or `0` for no limit.
+    static NATIVE_STACK_FLOOR: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Makes the scope analyses on this thread fail with [`NESTED_TOO_DEEPLY`] instead of overflowing
+/// the native stack once it grows past the address `floor`, until the returned value is dropped.
+/// A `floor` of `0` sets no limit.
+pub fn limit_native_stack(floor: usize) -> NativeStackLimit {
+    NativeStackLimit {
+        previous: NATIVE_STACK_FLOOR.replace(floor),
+    }
+}
+
+/// Puts back the native stack limit of the scope analysis it replaced when dropped; see
+/// [`limit_native_stack`].
+#[derive(Debug)]
+#[must_use]
+pub struct NativeStackLimit {
+    previous: usize,
+}
+
+impl Drop for NativeStackLimit {
+    fn drop(&mut self) {
+        NATIVE_STACK_FLOOR.set(self.previous);
+    }
+}
+
+/// Returns whether the native stack has grown past `floor`.
+#[inline]
+fn past_stack_floor(floor: usize) -> bool {
+    stack_position() < floor
+}
+
+/// Returns an address on the native stack at its current end: the stack pointer where it can be
+/// read without a stack slot.
+#[inline]
+fn stack_position() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let sp: usize;
+        // SAFETY: Reading the stack pointer into a register touches no memory.
+        unsafe {
+            core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack, preserves_flags));
+        }
+        sp
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let sp: usize;
+        // SAFETY: Reading the stack pointer into a register touches no memory.
+        unsafe {
+            core::arch::asm!("mov {}, rsp", out(reg) sp, options(nomem, nostack, preserves_flags));
+        }
+        sp
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        let marker = 0u8;
+        std::hint::black_box(std::ptr::from_ref(&marker)).addr()
+    }
+}
 
 /// Collect bindings and fill the scopes with them.
 ///
@@ -48,6 +115,7 @@ where
     &'a mut N: Into<NodeRefMut<'a>>,
 {
     let mut visitor = BindingCollectorVisitor {
+        stack_floor: NATIVE_STACK_FLOOR.get(),
         strict,
         eval,
         in_arrow: false,
@@ -74,6 +142,7 @@ where
     &'a mut N: Into<NodeRefMut<'a>>,
 {
     let mut visitor = BindingEscapeAnalyzer {
+        stack_floor: NATIVE_STACK_FLOOR.get(),
         scope,
         direct_eval: in_eval,
         with: false,
@@ -87,6 +156,8 @@ where
 }
 
 struct BindingEscapeAnalyzer<'interner> {
+    /// See [`limit_native_stack`].
+    stack_floor: usize,
     scope: Scope,
     direct_eval: bool,
     with: bool,
@@ -95,6 +166,20 @@ struct BindingEscapeAnalyzer<'interner> {
 
 impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
     type BreakTy = &'static str;
+
+    fn visit_expression_mut(&mut self, node: &'ast mut Expression) -> ControlFlow<Self::BreakTy> {
+        if past_stack_floor(self.stack_floor) {
+            return ControlFlow::Break(NESTED_TOO_DEEPLY);
+        }
+        node.visit_with_mut(self)
+    }
+
+    fn visit_statement_mut(&mut self, node: &'ast mut Statement) -> ControlFlow<Self::BreakTy> {
+        if past_stack_floor(self.stack_floor) {
+            return ControlFlow::Break(NESTED_TOO_DEEPLY);
+        }
+        node.visit_with_mut(self)
+    }
 
     fn visit_identifier_mut(&mut self, node: &'ast mut Identifier) -> ControlFlow<Self::BreakTy> {
         let name = node.to_js_string(self.interner);
@@ -601,6 +686,8 @@ impl BindingEscapeAnalyzer<'_> {
 }
 
 struct BindingCollectorVisitor<'interner> {
+    /// See [`limit_native_stack`].
+    stack_floor: usize,
     strict: bool,
     eval: bool,
     scope: Scope,
@@ -610,6 +697,20 @@ struct BindingCollectorVisitor<'interner> {
 
 impl<'ast> VisitorMut<'ast> for BindingCollectorVisitor<'_> {
     type BreakTy = &'static str;
+
+    fn visit_expression_mut(&mut self, node: &'ast mut Expression) -> ControlFlow<Self::BreakTy> {
+        if past_stack_floor(self.stack_floor) {
+            return ControlFlow::Break(NESTED_TOO_DEEPLY);
+        }
+        node.visit_with_mut(self)
+    }
+
+    fn visit_statement_mut(&mut self, node: &'ast mut Statement) -> ControlFlow<Self::BreakTy> {
+        if past_stack_floor(self.stack_floor) {
+            return ControlFlow::Break(NESTED_TOO_DEEPLY);
+        }
+        node.visit_with_mut(self)
+    }
 
     fn visit_this_mut(
         &mut self,
@@ -1255,14 +1356,19 @@ impl BindingCollectorVisitor<'_> {
 }
 
 /// Optimize scope indices when scopes only contain local bindings.
-pub(crate) fn optimize_scope_indices<'a, N>(node: &'a mut N, scope: &Scope)
+///
+/// # Errors
+/// [`NESTED_TOO_DEEPLY`] if the native stack ran out.
+pub(crate) fn optimize_scope_indices<'a, N>(
+    node: &'a mut N,
+    scope: &Scope,
+) -> Result<(), &'static str>
 where
     &'a mut N: Into<NodeRefMut<'a>>,
 {
-    let mut visitor = ScopeIndexVisitor {
-        index: scope.scope_index(),
-    };
+    let mut visitor = ScopeIndexVisitor::new(scope);
     let _ = visitor.visit(node.into());
+    visitor.result()
 }
 
 /// Like [`optimize_scope_indices`] but for a [`FunctionExpression`] compiled
@@ -1274,10 +1380,8 @@ where
 pub(crate) fn optimize_scope_indices_function_constructor(
     node: &mut FunctionExpression,
     scope: &Scope,
-) {
-    let mut visitor = ScopeIndexVisitor {
-        index: scope.scope_index(),
-    };
+) -> Result<(), &'static str> {
+    let mut visitor = ScopeIndexVisitor::new(scope);
     let _ = visitor.visit_function_like(
         &mut node.body,
         &mut node.parameters,
@@ -1287,14 +1391,35 @@ pub(crate) fn optimize_scope_indices_function_constructor(
         // Always force the function scope for the Function constructor.
         true,
     );
+    visitor.result()
 }
 
 struct ScopeIndexVisitor {
+    /// See [`limit_native_stack`].
+    stack_floor: usize,
+    /// Whether the native stack ran out.
+    nested_too_deeply: bool,
     index: u32,
 }
 
 impl<'ast> VisitorMut<'ast> for ScopeIndexVisitor {
     type BreakTy = ();
+
+    fn visit_expression_mut(&mut self, node: &'ast mut Expression) -> ControlFlow<Self::BreakTy> {
+        if past_stack_floor(self.stack_floor) {
+            self.nested_too_deeply = true;
+            return ControlFlow::Break(());
+        }
+        node.visit_with_mut(self)
+    }
+
+    fn visit_statement_mut(&mut self, node: &'ast mut Statement) -> ControlFlow<Self::BreakTy> {
+        if past_stack_floor(self.stack_floor) {
+            self.nested_too_deeply = true;
+            return ControlFlow::Break(());
+        }
+        node.visit_with_mut(self)
+    }
 
     fn visit_function_declaration_mut(
         &mut self,
@@ -1704,6 +1829,23 @@ impl<'ast> VisitorMut<'ast> for ScopeIndexVisitor {
 }
 
 impl ScopeIndexVisitor {
+    fn new(scope: &Scope) -> Self {
+        Self {
+            stack_floor: NATIVE_STACK_FLOOR.get(),
+            nested_too_deeply: false,
+            index: scope.scope_index(),
+        }
+    }
+
+    /// [`NESTED_TOO_DEEPLY`] if the native stack ran out.
+    fn result(&self) -> Result<(), &'static str> {
+        if self.nested_too_deeply {
+            Err(NESTED_TOO_DEEPLY)
+        } else {
+            Ok(())
+        }
+    }
+
     fn visit_function_like(
         &mut self,
         body: &mut FunctionBody,

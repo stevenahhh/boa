@@ -16,7 +16,7 @@ use crate::{
 };
 use boa_gc::{Finalize, Gc, Trace, custom_trace};
 use shadow_stack::ShadowStack;
-use std::{future::Future, ops::ControlFlow, path::Path, pin::Pin, task};
+use std::{cell::Cell, future::Future, ops::ControlFlow, path::Path, pin::Pin, task};
 
 #[cfg(feature = "trace")]
 use crate::sys::time::Instant;
@@ -1069,12 +1069,16 @@ impl Context {
 
     /// Returns the lowest native stack address that native code may reach.
     ///
-    /// That is the native stack limit below the start of the outermost run of the interpreter, or
-    /// below the current end of the stack when no run is active, for native code that the host
-    /// calls directly. A recursive native algorithm reads it once and checks it with
-    /// [`check_native_stack`] at each level, so that like a call it fails with the same
-    /// catchable `RangeError` instead of overflowing the native stack.
+    /// That is the end of the current thread's stack, less a reserve, where the platform reports it. Elsewhere it is the native stack limit below the start of the
+    /// outermost run of the interpreter, or below the current end of the stack when no run is
+    /// active, for native code that the host calls directly. The parser and the recursive
+    /// algorithms of builtins read it once and check it at each level, with
+    /// [`check_native_stack`], so that like a call they fail with the same catchable `RangeError`
+    /// instead of overflowing the native stack.
     pub(crate) fn native_stack_floor(&self) -> usize {
+        if let Some(floor) = thread_stack_floor() {
+            return floor;
+        }
         let start = if self.vm.native_stack_start == 0 {
             native_stack_position()
         } else {
@@ -1100,17 +1104,137 @@ pub(crate) fn check_native_stack(floor: usize) -> JsResult<()> {
     Ok(())
 }
 
-/// Returns an address on the native stack at its current end.
+/// The bytes [`Context::native_stack_floor`] keeps free at the end of the thread's stack: native
+/// code may use some past one check before it reaches the next, and needs room to build the error.
+const NATIVE_STACK_RESERVE: usize = 32 * 1024;
+
+/// The same for the main thread, where a Rust program faults up to 32,768 bytes above the end of
+/// the stack that pthread reports, as measured on macOS.
+const MAIN_THREAD_STACK_RESERVE: usize = 64 * 1024;
+
+/// Returns the lowest native stack address of the current thread that native code may reach, if
+/// the platform reports the end of the thread's stack.
+fn thread_stack_floor() -> Option<usize> {
+    thread_local! {
+        static FLOOR: Option<usize> = current_thread_stack_end().map(|(end, main)| {
+            end.saturating_add(if main {
+                MAIN_THREAD_STACK_RESERVE
+            } else {
+                NATIVE_STACK_RESERVE
+            })
+        });
+    }
+    FLOOR.with(|floor| *floor)
+}
+
+/// Returns the lowest address of the current thread's stack and whether it is the main thread.
+#[cfg(target_vendor = "apple")]
+fn current_thread_stack_end() -> Option<(usize, bool)> {
+    // SAFETY: These functions only read the attributes of the calling thread.
+    let (top, size, main) = unsafe {
+        let thread = libc::pthread_self();
+        (
+            libc::pthread_get_stackaddr_np(thread).addr(),
+            libc::pthread_get_stacksize_np(thread),
+            libc::pthread_main_np() != 0,
+        )
+    };
+    Some((top.checked_sub(size)?, main))
+}
+
+/// Returns the lowest address of the current thread's stack and whether it is the main thread.
+#[cfg(target_os = "linux")]
+fn current_thread_stack_end() -> Option<(usize, bool)> {
+    let mut attributes = std::mem::MaybeUninit::<libc::pthread_attr_t>::uninit();
+    // SAFETY: `pthread_getattr_np` initializes the attributes of the calling thread when it
+    // returns 0; they are then read once and destroyed once.
+    unsafe {
+        if libc::pthread_getattr_np(libc::pthread_self(), attributes.as_mut_ptr()) != 0 {
+            return None;
+        }
+        let mut address = std::ptr::null_mut();
+        let mut size = 0;
+        let found =
+            libc::pthread_attr_getstack(attributes.as_ptr(), &raw mut address, &raw mut size) == 0;
+        libc::pthread_attr_destroy(attributes.as_mut_ptr());
+        // The main thread is the one whose id is the id of the process.
+        let main = libc::gettid() == libc::getpid();
+        found.then(|| (address.addr(), main))
+    }
+}
+
+#[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
+const fn current_thread_stack_end() -> Option<(usize, bool)> {
+    None
+}
+
+/// Returns the lowest native stack address that compiling may reach, or `0` for no limit where the
+/// platform does not report the end of the thread's stack.
+pub(crate) fn compile_stack_floor() -> usize {
+    thread_stack_floor().unwrap_or(0)
+}
+
+thread_local! {
+    /// Whether compiling ran out of native stack since [`take_compile_stack_overflow`] last
+    /// cleared it.
+    static COMPILE_STACK_OVERFLOW: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Clears the record of [`take_compile_stack_overflow`], before a compilation starts.
+pub(crate) fn clear_compile_stack_overflow() {
+    COMPILE_STACK_OVERFLOW.set(false);
+}
+
+/// Records that compiling ran out of native stack; see [`take_compile_stack_overflow`].
+pub(crate) fn note_compile_stack_overflow() {
+    COMPILE_STACK_OVERFLOW.set(true);
+}
+
+/// Returns the `RangeError` of a stack overflow if compiling ran out of native stack since the last
+/// call, and clears the record.
+///
+/// Each compilation of source code calls it before it starts and after it ends, and drops what it
+/// compiled if it returns an error: the compiler skips the nodes it has no stack left for.
+pub(crate) fn take_compile_stack_overflow() -> JsResult<()> {
+    if COMPILE_STACK_OVERFLOW.replace(false) {
+        return Err(stack_overflow());
+    }
+    Ok(())
+}
+
+/// Returns an address on the native stack at its current end: the stack pointer where it can be
+/// read without a stack slot.
 #[inline]
-fn native_stack_position() -> usize {
-    let marker = 0u8;
-    std::hint::black_box(std::ptr::from_ref(&marker)).addr()
+pub(crate) fn native_stack_position() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let sp: usize;
+        // SAFETY: Reading the stack pointer into a register touches no memory.
+        unsafe {
+            core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack, preserves_flags));
+        }
+        sp
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let sp: usize;
+        // SAFETY: Reading the stack pointer into a register touches no memory.
+        unsafe {
+            core::arch::asm!("mov {}, rsp", out(reg) sp, options(nomem, nostack, preserves_flags));
+        }
+        sp
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        let marker = 0u8;
+        std::hint::black_box(std::ptr::from_ref(&marker)).addr()
+    }
 }
 
 /// The error of a call that exceeds the recursion, stack size or native stack limit.
 #[cold]
 #[inline(never)]
-fn stack_overflow() -> JsError {
+pub(crate) fn stack_overflow() -> JsError {
     JsNativeError::range()
         .with_message("Maximum call stack size exceeded")
         .into()

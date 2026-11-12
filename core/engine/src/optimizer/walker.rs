@@ -15,14 +15,22 @@ where
 
     /// Did a change happen while traversing.
     changed: bool,
+
+    /// The lowest native stack address the traversal may reach; see
+    /// [`crate::vm::compile_stack_floor`].
+    stack_floor: usize,
 }
 
 impl<F> Walker<F>
 where
     F: FnMut(&mut Expression) -> PassAction<Expression>,
 {
-    pub(crate) const fn new(f: F) -> Self {
-        Self { f, changed: false }
+    pub(crate) fn new(f: F) -> Self {
+        Self {
+            f,
+            changed: false,
+            stack_floor: crate::vm::compile_stack_floor(),
+        }
     }
 
     pub(crate) const fn changed(&self) -> bool {
@@ -43,6 +51,10 @@ where
 
     /// Visits the tree in postorder.
     fn visit_expression_mut(&mut self, expr: &'ast mut Expression) -> ControlFlow<Self::BreakTy> {
+        // Past the floor the subtree stays as it is: optimizing it is optional.
+        if crate::vm::native_stack_position() < self.stack_floor {
+            return ControlFlow::Continue(());
+        }
         expr.visit_with_mut(self)?;
 
         match (self.f)(expr) {

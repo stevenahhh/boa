@@ -728,11 +728,62 @@ fn recursion_in_setter_throws_a_range_error() {
 /// Environment variable that tells a run of the test binary which deep nesting case to run.
 const DEEP_NESTING_CASE: &str = "BOA_DEEP_NESTING_CASE";
 
-/// Scripts that nest deeper than the native stack the engine may use, by default half of the
-/// stack of a thread spawned by std, and the error each must end with.
+/// The stack of the thread the deep nesting cases run on: twice the 8,388,608 bytes of the main
+/// thread, on which render runs scripts, so that the depths it handled run in any optimized build, and still
+/// far less than the deepest cases need. An unoptimized build takes several times more stack for a
+/// level of nesting.
+const DEEP_NESTING_STACK: usize = if cfg!(debug_assertions) {
+    64 * 1024 * 1024
+} else {
+    16 * 1024 * 1024
+};
+
+/// Scripts that nest as deep as the engine handled on the main thread before it bounded nesting,
+/// or 1,000 levels for the simple constructs, which must run without error, and scripts that nest
+/// far deeper than the native stack, with the error each must end with.
 fn deep_nesting_cases() -> Vec<(&'static str, String, &'static str)> {
+    let nest = |open: &str, inner: &str, close: &str, levels: usize| {
+        format!("{}{inner}{}", open.repeat(levels), close.repeat(levels))
+    };
+    let deep_enough = [
+        ("array at depth", nest("[", "", "]", 1000)),
+        (
+            "object at depth",
+            format!("x = {}", nest("{a:", "1", "}", 1000)),
+        ),
+        ("parentheses at depth", nest("(", "1", ")", 1000)),
+        (
+            "calls at depth",
+            format!(
+                "function f(v) {{ return v; }} {}",
+                nest("f(", "1", ")", 1000)
+            ),
+        ),
+        ("unary at depth", format!("{}1", "!".repeat(5918))),
+        ("exponent at depth", format!("{}1", "1 ** ".repeat(17_359))),
+        (
+            "functions at depth",
+            nest("(function () { return ", "1", "; })()", 291),
+        ),
+        ("blocks at depth", nest("{", "", "}", 3566)),
+        ("templates at depth", nest("`${", "1", "}`", 1000)),
+        (
+            "conditionals at depth",
+            format!("{}1", "0 ? 0 : ".repeat(4036)),
+        ),
+        (
+            "pattern at depth",
+            format!(
+                "var v = 1; for (var i = 0; i < 8990; i++) v = [v]; var {} = v;",
+                nest("[", "a", "]", 8990)
+            ),
+        ),
+    ];
     let script = "[".repeat(100_000) + &"]".repeat(100_000);
-    [
+    deep_enough
+        .into_iter()
+        .map(|(name, script)| (name, script, "no error"))
+        .chain([
         ("script", script.as_str(), "RangeError"),
         ("stringify", "let a = []; for (let i = 0; i < 200000; i++) a = [a]; JSON.stringify(a)", "RangeError"),
         ("stringify indented", "let o = {}; for (let i = 0; i < 200000; i++) o = { o }; JSON.stringify(o, null, 1)", "RangeError"),
@@ -751,12 +802,14 @@ fn deep_nesting_cases() -> Vec<(&'static str, String, &'static str)> {
         ("assignment pattern", "var x; eval('['.repeat(50000) + 'x' + ']'.repeat(50000) + ' = [];')", "RangeError"),
         ("object pattern", "eval('var ' + '{a:'.repeat(50000) + 'x' + '}'.repeat(50000) + ' = {};')", "RangeError"),
         ("to string", "let a = []; for (let i = 0; i < 200000; i++) a = [a]; String(a)", "RangeError"),
+        ("binary chain", "eval('1' + '+1'.repeat(200000))", "RangeError"),
+        ("member chain", "var o = {}; o.a = o; eval('o' + '.a'.repeat(200000))", "RangeError"),
         ("json parse", "JSON.parse('['.repeat(200000) + ']'.repeat(200000))", "SyntaxError"),
         ("regexp", "new RegExp('('.repeat(100000) + ')'.repeat(100000))", "SyntaxError"),
         ("copy", "let o = {}; for (let i = 0; i < 200000; i++) o = { o }; const copy = (v) => typeof v !== 'object' ? v : { o: copy(v.o) }; copy(o)", "RangeError"),
     ]
     .into_iter()
-    .map(|(name, script, error)| (name, script.to_owned(), error))
+    .map(|(name, script, error)| (name, script.to_owned(), error)))
     .collect()
 }
 
@@ -777,15 +830,14 @@ fn deep_nesting_outcome(script: &str) -> String {
 #[test]
 fn deep_nesting_throws_instead_of_overflowing_the_native_stack() {
     // A native stack overflow aborts the process, so each case runs in a run of this test binary
-    // that runs only this test, on a thread with the 2 MiB stack of the thread render runs
-    // scripts on.
+    // that runs only this test, on a thread with the stack of `DEEP_NESTING_STACK`.
     if let Ok(name) = std::env::var(DEEP_NESTING_CASE) {
         let (_, script, _) = deep_nesting_cases()
             .into_iter()
             .find(|case| case.0 == name)
             .expect("the case must exist");
         let outcome = std::thread::Builder::new()
-            .stack_size(2 * 1024 * 1024)
+            .stack_size(DEEP_NESTING_STACK)
             .spawn(move || deep_nesting_outcome(&script))
             .expect("spawn a thread")
             .join()

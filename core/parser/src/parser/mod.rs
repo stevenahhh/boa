@@ -27,6 +27,7 @@ use boa_ast::{
         contains_invalid_object_literal, lexically_declared_names, var_declared_names,
     },
     scope::Scope,
+    scope_analyzer::limit_native_stack,
 };
 use boa_interner::{Interner, Sym};
 use rustc_hash::FxHashSet;
@@ -107,6 +108,11 @@ impl From<bool> for AllowDefault {
     }
 }
 
+/// The native stack charged for each link of a chain the parser builds in a loop, such as
+/// `a + b + c` or `a.b.c`: the passes over the tree recurse once per link, and the early-error
+/// checks, which do not check the stack themselves, take about 95 bytes for a link.
+pub(in crate::parser) const CHAIN_LINK_STACK: usize = 192;
+
 /// Parser for the ECMAScript language.
 ///
 /// This parser implementation tries to be conformant to the most recent
@@ -165,7 +171,11 @@ impl<'a, R: ReadChar> Parser<'a, R> {
     ) -> ParseResult<ScriptParseOutput> {
         self.cursor.set_goal(InputElement::HashbangOrRegExp);
         let (mut ast, source) = ScriptParser::new(false).parse(&mut self.cursor, interner)?;
-        if let Err(reason) = ast.analyze_scope(scope, interner) {
+        let analysis = {
+            let _limit = limit_native_stack(self.cursor.stack_floor());
+            ast.analyze_scope(scope, interner)
+        };
+        if let Err(reason) = analysis {
             return Err(Error::scope_analysis(reason));
         }
         Ok((ast, source))
@@ -208,7 +218,11 @@ impl<'a, R: ReadChar> Parser<'a, R> {
     {
         self.cursor.set_goal(InputElement::HashbangOrRegExp);
         let (mut module, source) = ModuleParser.parse(&mut self.cursor, interner)?;
-        if let Err(reason) = module.analyze_scope(scope, interner) {
+        let analysis = {
+            let _limit = limit_native_stack(self.cursor.stack_floor());
+            module.analyze_scope(scope, interner)
+        };
+        if let Err(reason) = analysis {
             return Err(Error::scope_analysis(reason));
         }
         Ok((module, source))

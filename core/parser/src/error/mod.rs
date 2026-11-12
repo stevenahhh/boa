@@ -148,8 +148,12 @@ impl Error {
         }
     }
 
-    /// Creates a `ScopeAnalysis` parsing error.
+    /// Creates a `ScopeAnalysis` parsing error, or [`Self::StackOverflow`] if the analysis ran out
+    /// of native stack.
     pub(crate) fn scope_analysis(err: &'static str) -> Self {
+        if err == boa_ast::scope_analyzer::NESTED_TOO_DEEPLY {
+            return Self::StackOverflow;
+        }
         Self::ScopeAnalysis { err }
     }
 

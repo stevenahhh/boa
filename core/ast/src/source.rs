@@ -60,7 +60,7 @@ impl Script {
     ) -> Result<(), &'static str> {
         collect_bindings(self, self.strict(), false, scope, interner)?;
         analyze_binding_escapes(self, false, scope.clone(), interner)?;
-        optimize_scope_indices(self, scope);
+        optimize_scope_indices(self, scope)?;
         Ok(())
     }
 
@@ -97,7 +97,7 @@ impl Script {
         lexical_scope.escape_all_bindings();
         variable_scope.reorder_binding_indices();
         lexical_scope.reorder_binding_indices();
-        optimize_scope_indices(self, lexical_scope);
+        optimize_scope_indices(self, lexical_scope).map_err(str::to_owned)?;
 
         Ok(bindings)
     }
@@ -188,7 +188,7 @@ impl Module {
     ) -> Result<(), &'static str> {
         collect_bindings(self, true, false, scope, interner)?;
         analyze_binding_escapes(self, false, scope.clone(), interner)?;
-        optimize_scope_indices(self, &self.scope.clone());
+        optimize_scope_indices(self, &self.scope.clone())?;
 
         Ok(())
     }

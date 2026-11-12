@@ -84,65 +84,16 @@ where
 {
     type Output = FormalParameterListOrExpression;
 
+    #[inline(never)]
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
         let tok = cursor.peek(0, interner).or_abrupt()?;
         let position = tok.span().start();
         match tok.kind() {
             TokenKind::Punctuator(Punctuator::Inc) => {
-                cursor
-                    .next(interner)?
-                    .expect("Punctuator::Inc token disappeared");
-
-                let target = UnaryExpression::new(self.allow_yield, self.allow_await)
-                    .parse(cursor, interner)?
-                    .try_into_expression()?;
-                let target_span_end = target.span().end();
-
-                // https://tc39.es/ecma262/#sec-update-expressions-static-semantics-early-errors
-                return (as_simple(&target, position, cursor.strict())?).map_or_else(
-                    || {
-                        Err(Error::lex(LexError::Syntax(
-                            "Invalid left-hand side in assignment".into(),
-                            position,
-                        )))
-                    },
-                    |target| {
-                        Ok(Update::new(
-                            UpdateOp::IncrementPre,
-                            target,
-                            Span::new(position, target_span_end),
-                        )
-                        .into())
-                    },
-                );
+                return self.parse_prefix(UpdateOp::IncrementPre, position, cursor, interner);
             }
             TokenKind::Punctuator(Punctuator::Dec) => {
-                cursor
-                    .next(interner)?
-                    .expect("Punctuator::Dec token disappeared");
-
-                let target = UnaryExpression::new(self.allow_yield, self.allow_await)
-                    .parse(cursor, interner)?
-                    .try_into_expression()?;
-                let target_span_end = target.span().end();
-
-                // https://tc39.es/ecma262/#sec-update-expressions-static-semantics-early-errors
-                return (as_simple(&target, position, cursor.strict())?).map_or_else(
-                    || {
-                        Err(Error::lex(LexError::Syntax(
-                            "Invalid left-hand side in assignment".into(),
-                            position,
-                        )))
-                    },
-                    |target| {
-                        Ok(Update::new(
-                            UpdateOp::DecrementPre,
-                            target,
-                            Span::new(position, target_span_end),
-                        )
-                        .into())
-                    },
-                );
+                return self.parse_prefix(UpdateOp::DecrementPre, position, cursor, interner);
             }
             _ => {}
         }
@@ -152,66 +103,87 @@ where
         let FormalParameterListOrExpression::Expression(lhs) = lhs else {
             return Ok(lhs);
         };
-        let lhs_span_start = lhs.span().start();
 
         if cursor.peek_is_line_terminator(0, interner)?.unwrap_or(true) {
             return Ok(lhs.into());
         }
 
         if let Some(tok) = cursor.peek(0, interner)? {
-            let token_start = tok.span().start();
-            let token_end = tok.span().end();
-            match tok.kind() {
-                TokenKind::Punctuator(Punctuator::Inc) => {
-                    cursor
-                        .next(interner)?
-                        .expect("Punctuator::Inc token disappeared");
-
-                    // https://tc39.es/ecma262/#sec-update-expressions-static-semantics-early-errors
-                    return (as_simple(&lhs, position, cursor.strict())?).map_or_else(
-                        || {
-                            Err(Error::lex(LexError::Syntax(
-                                "Invalid left-hand side in assignment".into(),
-                                token_start,
-                            )))
-                        },
-                        |target| {
-                            Ok(Update::new(
-                                UpdateOp::IncrementPost,
-                                target,
-                                Span::new(lhs_span_start, token_end),
-                            )
-                            .into())
-                        },
-                    );
-                }
-                TokenKind::Punctuator(Punctuator::Dec) => {
-                    cursor
-                        .next(interner)?
-                        .expect("Punctuator::Dec token disappeared");
-
-                    // https://tc39.es/ecma262/#sec-update-expressions-static-semantics-early-errors
-                    return (as_simple(&lhs, position, cursor.strict())?).map_or_else(
-                        || {
-                            Err(Error::lex(LexError::Syntax(
-                                "Invalid left-hand side in assignment".into(),
-                                token_start,
-                            )))
-                        },
-                        |target| {
-                            Ok(Update::new(
-                                UpdateOp::DecrementPost,
-                                target,
-                                Span::new(lhs_span_start, token_end),
-                            )
-                            .into())
-                        },
-                    );
-                }
-                _ => {}
-            }
+            let op = match tok.kind() {
+                TokenKind::Punctuator(Punctuator::Inc) => UpdateOp::IncrementPost,
+                TokenKind::Punctuator(Punctuator::Dec) => UpdateOp::DecrementPost,
+                _ => return Ok(lhs.into()),
+            };
+            return Self::parse_postfix(op, &lhs, position, cursor, interner);
         }
 
         Ok(lhs.into())
+    }
+}
+
+// The update operators sit outside the frame of `parse`, which every level of nesting goes
+// through.
+impl UpdateExpression {
+    /// Parses a prefix `++` or `--`, at `position`, and its operand.
+    #[inline(never)]
+    fn parse_prefix<R>(
+        self,
+        op: UpdateOp,
+        position: Position,
+        cursor: &mut Cursor<R>,
+        interner: &mut Interner,
+    ) -> ParseResult<FormalParameterListOrExpression>
+    where
+        R: ReadChar,
+    {
+        cursor
+            .next(interner)?
+            .expect("update operator token disappeared");
+
+        let target = UnaryExpression::new(self.allow_yield, self.allow_await)
+            .parse(cursor, interner)?
+            .try_into_expression()?;
+        let target_span_end = target.span().end();
+
+        // https://tc39.es/ecma262/#sec-update-expressions-static-semantics-early-errors
+        (as_simple(&target, position, cursor.strict())?).map_or_else(
+            || {
+                Err(Error::lex(LexError::Syntax(
+                    "Invalid left-hand side in assignment".into(),
+                    position,
+                )))
+            },
+            |target| Ok(Update::new(op, target, Span::new(position, target_span_end)).into()),
+        )
+    }
+
+    /// Parses the postfix `++` or `--` after `lhs`, which starts at `position`.
+    #[inline(never)]
+    fn parse_postfix<R>(
+        op: UpdateOp,
+        lhs: &Expression,
+        position: Position,
+        cursor: &mut Cursor<R>,
+        interner: &mut Interner,
+    ) -> ParseResult<FormalParameterListOrExpression>
+    where
+        R: ReadChar,
+    {
+        let lhs_span_start = lhs.span().start();
+        let token = cursor
+            .next(interner)?
+            .expect("update operator token disappeared");
+        let (token_start, token_end) = (token.span().start(), token.span().end());
+
+        // https://tc39.es/ecma262/#sec-update-expressions-static-semantics-early-errors
+        (as_simple(lhs, position, cursor.strict())?).map_or_else(
+            || {
+                Err(Error::lex(LexError::Syntax(
+                    "Invalid left-hand side in assignment".into(),
+                    token_start,
+                )))
+            },
+            |target| Ok(Update::new(op, target, Span::new(lhs_span_start, token_end)).into()),
+        )
     }
 }

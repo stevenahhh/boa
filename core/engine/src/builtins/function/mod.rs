@@ -678,9 +678,14 @@ impl BuiltInFunctionObject {
             false,
             Span::new(function_span_start, function_span_end),
         );
-        if let Err(reason) =
+        let analysis = {
+            let _limit = boa_ast::scope_analyzer::limit_native_stack(context.native_stack_floor());
             function.analyze_scope(strict, context.realm().scope(), context.interner())
-        {
+        };
+        if let Err(reason) = analysis {
+            if reason == boa_ast::scope_analyzer::NESTED_TOO_DEEPLY {
+                return Err(crate::vm::stack_overflow());
+            }
             return Err(js_error!(SyntaxError: "failed to analyze function scope: {}", reason));
         }
 
@@ -692,6 +697,7 @@ impl BuiltInFunctionObject {
             Some(source_span),
         );
 
+        crate::vm::clear_compile_stack_overflow();
         let code = FunctionCompiler::new(spanned_source_text)
             .name(js_string!("anonymous"))
             .generator(generator)
@@ -707,6 +713,7 @@ impl BuiltInFunctionObject {
                 function.contains_direct_eval(),
                 context.interner_mut(),
             );
+        crate::vm::take_compile_stack_overflow()?;
 
         let saved = context.vm.frame_mut().environments.pop_to_global();
         let function_object = crate::vm::create_function_object(code, prototype, context);

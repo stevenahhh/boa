@@ -44,7 +44,7 @@ use crate::{
 };
 use ast::expression::RegExpLiteral as AstRegExp;
 use boa_ast::{
-    self as ast, Keyword, Punctuator, Span, Spanned,
+    self as ast, Keyword, PositionGroup, Punctuator, Span, Spanned,
     declaration::Variable,
     expression::{
         Identifier, Parenthesized, This,
@@ -130,34 +130,7 @@ where
             }
             TokenKind::Keyword((Keyword::Async, contain_escaped_char)) => {
                 let contain_escaped_char = *contain_escaped_char;
-                let skip_n = if cursor.peek_is_line_terminator(0, interner).or_abrupt()? {
-                    2
-                } else {
-                    1
-                };
-                let is_line_terminator = cursor
-                    .peek_is_line_terminator(skip_n, interner)?
-                    .unwrap_or(true);
-
-                match cursor.peek(1, interner)?.map(Token::kind) {
-                    Some(TokenKind::Keyword((Keyword::Function, _)))
-                        if !is_line_terminator && !contain_escaped_char =>
-                    {
-                        match cursor.peek(2, interner)?.map(Token::kind) {
-                            Some(TokenKind::Punctuator(Punctuator::Mul)) => {
-                                AsyncGeneratorExpression::new()
-                                    .parse(cursor, interner)
-                                    .map(Into::into)
-                            }
-                            _ => AsyncFunctionExpression::new()
-                                .parse(cursor, interner)
-                                .map(Into::into),
-                        }
-                    }
-                    _ => IdentifierReference::new(self.allow_yield, self.allow_await)
-                        .parse(cursor, interner)
-                        .map(Into::into),
-                }
+                self.parse_async(contain_escaped_char, cursor, interner)
             }
             TokenKind::Punctuator(Punctuator::OpenParen) => {
                 let expr = CoverParenthesizedExpressionAndArrowParameterList::new(
@@ -236,21 +209,8 @@ where
             }
             TokenKind::Punctuator(div @ (Punctuator::Div | Punctuator::AssignDiv)) => {
                 let init_with_eq = div == &Punctuator::AssignDiv;
-
                 let start_pos_group = tok.start_group();
-                cursor.advance(interner);
-                let tok = cursor.lex_regex(start_pos_group, interner, init_with_eq)?;
-
-                if let TokenKind::RegularExpressionLiteral(body, flags) = *tok.kind() {
-                    Ok(AstRegExp::new(body, flags, tok.span()).into())
-                } else {
-                    // A regex was expected and nothing else.
-                    Err(Error::unexpected(
-                        tok.to_string(interner),
-                        tok.span(),
-                        "regular expression literal",
-                    ))
-                }
+                Self::parse_regex(init_with_eq, start_pos_group, cursor, interner)
             }
             TokenKind::TemplateMiddle(template_string) => {
                 let Some(cooked) = template_string.cooked() else {
@@ -259,22 +219,106 @@ where
                         tok.span().start(),
                     ));
                 };
-                let parser = TemplateLiteral::new(
-                    self.allow_yield,
-                    self.allow_await,
-                    tok.start_group(),
-                    cooked,
-                );
-                cursor.advance(interner);
-                parser.parse(cursor, interner).map(Into::into)
+                let start_group = tok.start_group();
+                self.parse_template(start_group, cooked, cursor, interner)
             }
-            _ => Err(Error::unexpected(
-                tok.to_string(interner),
-                tok.span(),
-                "primary expression",
-            )),
+            _ => Err(unexpected_token(tok, interner)),
         }
     }
+}
+
+// Rare primary expressions stay out of the frame of `parse`, which every level of nesting goes
+// through.
+impl PrimaryExpression {
+    /// Parses the expression that starts with the keyword `async`.
+    #[inline(never)]
+    fn parse_async<R>(
+        self,
+        contain_escaped_char: bool,
+        cursor: &mut Cursor<R>,
+        interner: &mut Interner,
+    ) -> ParseResult<FormalParameterListOrExpression>
+    where
+        R: ReadChar,
+    {
+        let skip_n = if cursor.peek_is_line_terminator(0, interner).or_abrupt()? {
+            2
+        } else {
+            1
+        };
+        let is_line_terminator = cursor
+            .peek_is_line_terminator(skip_n, interner)?
+            .unwrap_or(true);
+
+        match cursor.peek(1, interner)?.map(Token::kind) {
+            Some(TokenKind::Keyword((Keyword::Function, _)))
+                if !is_line_terminator && !contain_escaped_char =>
+            {
+                match cursor.peek(2, interner)?.map(Token::kind) {
+                    Some(TokenKind::Punctuator(Punctuator::Mul)) => AsyncGeneratorExpression::new()
+                        .parse(cursor, interner)
+                        .map(Into::into),
+                    _ => AsyncFunctionExpression::new()
+                        .parse(cursor, interner)
+                        .map(Into::into),
+                }
+            }
+            _ => IdentifierReference::new(self.allow_yield, self.allow_await)
+                .parse(cursor, interner)
+                .map(Into::into),
+        }
+    }
+
+    /// Parses the regular expression literal that starts with the division punctuator the cursor
+    /// is at.
+    #[inline(never)]
+    fn parse_regex<R>(
+        init_with_eq: bool,
+        start_pos_group: PositionGroup,
+        cursor: &mut Cursor<R>,
+        interner: &mut Interner,
+    ) -> ParseResult<FormalParameterListOrExpression>
+    where
+        R: ReadChar,
+    {
+        cursor.advance(interner);
+        let tok = cursor.lex_regex(start_pos_group, interner, init_with_eq)?;
+
+        if let TokenKind::RegularExpressionLiteral(body, flags) = *tok.kind() {
+            Ok(AstRegExp::new(body, flags, tok.span()).into())
+        } else {
+            // A regex was expected and nothing else.
+            Err(Error::unexpected(
+                tok.to_string(interner),
+                tok.span(),
+                "regular expression literal",
+            ))
+        }
+    }
+
+    /// Parses the template literal with substitutions whose head the cursor is at.
+    #[inline(never)]
+    fn parse_template<R>(
+        self,
+        start_group: PositionGroup,
+        cooked: Sym,
+        cursor: &mut Cursor<R>,
+        interner: &mut Interner,
+    ) -> ParseResult<FormalParameterListOrExpression>
+    where
+        R: ReadChar,
+    {
+        let parser = TemplateLiteral::new(self.allow_yield, self.allow_await, start_group, cooked);
+        cursor.advance(interner);
+        parser.parse(cursor, interner).map(Into::into)
+    }
+}
+
+/// The error of a token that cannot start a primary expression.
+#[cold]
+#[inline(never)]
+fn unexpected_token(tok: &Token, interner: &Interner) -> Error {
+    Error::unexpected(tok.to_string(interner), tok.span(), "primary expression")
 }
 
 /// Parses a `CoverParenthesizedExpressionAndArrowParameterList` expression.

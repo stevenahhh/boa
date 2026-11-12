@@ -188,6 +188,10 @@ impl<'ast> VisitorMut<'ast> for Optimizer<'_> {
     }
 
     fn visit_statement_mut(&mut self, node: &'ast mut Statement) -> ControlFlow<Self::BreakTy> {
+        // Past the floor the statement stays as it is: optimizing it is optional.
+        if crate::vm::native_stack_position() < crate::vm::compile_stack_floor() {
+            return ControlFlow::Continue(());
+        }
         // First, recurse into children so constant folding and
         // strength reduction run on nested expressions.
         node.visit_with_mut(self)?;

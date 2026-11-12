@@ -32,8 +32,9 @@ use crate::{
     source::ReadChar,
 };
 use boa_ast::{
-    Expression, Keyword, Punctuator, Span, Spanned,
+    Expression, Keyword, LinearSpan, Position, Punctuator, Span, Spanned,
     expression::operator::assign::{Assign, AssignOp, AssignTarget},
+    function::FormalParameterList,
     operations::{ContainsSymbol, bound_names, contains, lexically_declared_names},
 };
 use boa_interner::Interner;
@@ -119,32 +120,8 @@ where
             }
             //  AsyncArrowFunction[?In, ?Yield, ?Await]
             TokenKind::Keyword((Keyword::Async, false)) => {
-                let skip_n = if cursor.peek_is_line_terminator(0, interner).or_abrupt()? {
-                    2
-                } else {
-                    1
-                };
-
-                let peek_1 = cursor.peek(1, interner).or_abrupt()?.kind().clone();
-                if !cursor
-                    .peek_is_line_terminator(skip_n, interner)
-                    .or_abrupt()?
-                    && (matches!(peek_1, TokenKind::Punctuator(Punctuator::OpenParen))
-                        || (matches!(
-                            peek_1,
-                            TokenKind::IdentifierName(_)
-                                | TokenKind::Keyword((
-                                    Keyword::Yield | Keyword::Await | Keyword::Of,
-                                    _
-                                ))
-                        ) && matches!(
-                            cursor.peek(2, interner).or_abrupt()?.kind(),
-                            TokenKind::Punctuator(Punctuator::Arrow)
-                        )))
-                {
-                    return Ok(AsyncArrowFunction::new(self.allow_in, self.allow_yield)
-                        .parse(cursor, interner)?
-                        .into());
+                if let Some(function) = self.parse_async_arrow_function(cursor, interner)? {
+                    return Ok(function);
                 }
             }
             _ => {}
@@ -159,82 +136,168 @@ where
             .parse(cursor, interner)?;
 
         // If the left hand side is a parameter list, we must parse an arrow function.
-        let mut lhs = match lhs {
+        let lhs = match lhs {
             FormalParameterListOrExpression::FormalParameterList {
                 fpl: parameters, ..
             } => {
-                cursor.peek_expect_no_lineterminator(0, "arrow function", interner)?;
-
-                cursor.expect(
-                    TokenKind::Punctuator(Punctuator::Arrow),
-                    "arrow function",
-                    interner,
-                )?;
-                let arrow = cursor.arrow();
-                cursor.set_arrow(true);
-                let body = ConciseBody::new(self.allow_in).parse(cursor, interner)?;
-                cursor.set_arrow(arrow);
-
-                // Early Error: ArrowFormalParameters are UniqueFormalParameters.
-                if parameters.has_duplicates() {
-                    return Err(Error::lex(LexError::Syntax(
-                        "Duplicate parameter name not allowed in this context".into(),
-                        position,
-                    )));
-                }
-
-                // Early Error: It is a Syntax Error if ArrowParameters Contains YieldExpression is true.
-                if contains(&parameters, ContainsSymbol::YieldExpression) {
-                    return Err(Error::lex(LexError::Syntax(
-                        "Yield expression not allowed in this context".into(),
-                        position,
-                    )));
-                }
-
-                // Early Error: It is a Syntax Error if ArrowParameters Contains AwaitExpression is true.
-                if contains(&parameters, ContainsSymbol::AwaitExpression) {
-                    return Err(Error::lex(LexError::Syntax(
-                        "Await expression not allowed in this context".into(),
-                        position,
-                    )));
-                }
-
-                // Early Error: It is a Syntax Error if ConciseBodyContainsUseStrict of ConciseBody is true
-                // and IsSimpleParameterList of ArrowParameters is false.
-                if body.strict() && !parameters.is_simple() {
-                    return Err(Error::lex(LexError::Syntax(
-                        "Illegal 'use strict' directive in function with non-simple parameter list"
-                            .into(),
-                        position,
-                    )));
-                }
-
-                // It is a Syntax Error if any element of the BoundNames of ArrowParameters
-                // also occurs in the LexicallyDeclaredNames of ConciseBody.
-                // https://tc39.es/ecma262/#sec-arrow-function-definitions-static-semantics-early-errors
-                name_in_lexically_declared_names(
-                    &bound_names(&parameters),
-                    &lexically_declared_names(&body),
-                    position,
-                    interner,
-                )?;
-
-                let linear_pos_end = body.linear_pos_end();
-                let linear_span = start_linear_span.union(linear_pos_end);
-
-                let body_span_end = body.span().end();
-                return Ok(boa_ast::function::ArrowFunction::new(
-                    None,
+                return self.parse_arrow_function_body(
                     parameters,
-                    body,
-                    linear_span,
-                    Span::new(position, body_span_end),
-                )
-                .into());
+                    position,
+                    start_linear_span,
+                    cursor,
+                    interner,
+                );
             }
             FormalParameterListOrExpression::Expression(expression) => expression,
         };
 
+        // Review if we are trying to assign to an invalid left hand side expression.
+        if let Some(tok) = cursor.peek(0, interner)?
+            && let TokenKind::Punctuator(p) = tok.kind()
+            && (*p == Punctuator::Assign || p.as_assign_op().is_some())
+        {
+            return self.parse_assignment(lhs, cursor, interner);
+        }
+
+        Ok(lhs)
+    }
+}
+
+// The arms below stay out of the frame of `parse`, which every level of nesting goes through.
+impl AssignmentExpression {
+    /// Parses an async arrow function if the cursor is at one.
+    #[inline(never)]
+    fn parse_async_arrow_function<R>(
+        self,
+        cursor: &mut Cursor<R>,
+        interner: &mut Interner,
+    ) -> ParseResult<Option<Expression>>
+    where
+        R: ReadChar,
+    {
+        let skip_n = if cursor.peek_is_line_terminator(0, interner).or_abrupt()? {
+            2
+        } else {
+            1
+        };
+
+        let peek_1 = cursor.peek(1, interner).or_abrupt()?.kind().clone();
+        if !cursor
+            .peek_is_line_terminator(skip_n, interner)
+            .or_abrupt()?
+            && (matches!(peek_1, TokenKind::Punctuator(Punctuator::OpenParen))
+                || (matches!(
+                    peek_1,
+                    TokenKind::IdentifierName(_)
+                        | TokenKind::Keyword((Keyword::Yield | Keyword::Await | Keyword::Of, _))
+                ) && matches!(
+                    cursor.peek(2, interner).or_abrupt()?.kind(),
+                    TokenKind::Punctuator(Punctuator::Arrow)
+                )))
+        {
+            return Ok(Some(
+                AsyncArrowFunction::new(self.allow_in, self.allow_yield)
+                    .parse(cursor, interner)?
+                    .into(),
+            ));
+        }
+        Ok(None)
+    }
+
+    /// Parses the arrow and the body of an arrow function with the parameters `parameters`,
+    /// which start at `position`.
+    #[inline(never)]
+    fn parse_arrow_function_body<R>(
+        self,
+        parameters: FormalParameterList,
+        position: Position,
+        start_linear_span: LinearSpan,
+        cursor: &mut Cursor<R>,
+        interner: &mut Interner,
+    ) -> ParseResult<Expression>
+    where
+        R: ReadChar,
+    {
+        cursor.peek_expect_no_lineterminator(0, "arrow function", interner)?;
+
+        cursor.expect(
+            TokenKind::Punctuator(Punctuator::Arrow),
+            "arrow function",
+            interner,
+        )?;
+        let arrow = cursor.arrow();
+        cursor.set_arrow(true);
+        let body = ConciseBody::new(self.allow_in).parse(cursor, interner)?;
+        cursor.set_arrow(arrow);
+
+        // Early Error: ArrowFormalParameters are UniqueFormalParameters.
+        if parameters.has_duplicates() {
+            return Err(Error::lex(LexError::Syntax(
+                "Duplicate parameter name not allowed in this context".into(),
+                position,
+            )));
+        }
+
+        // Early Error: It is a Syntax Error if ArrowParameters Contains YieldExpression is true.
+        if contains(&parameters, ContainsSymbol::YieldExpression) {
+            return Err(Error::lex(LexError::Syntax(
+                "Yield expression not allowed in this context".into(),
+                position,
+            )));
+        }
+
+        // Early Error: It is a Syntax Error if ArrowParameters Contains AwaitExpression is true.
+        if contains(&parameters, ContainsSymbol::AwaitExpression) {
+            return Err(Error::lex(LexError::Syntax(
+                "Await expression not allowed in this context".into(),
+                position,
+            )));
+        }
+
+        // Early Error: It is a Syntax Error if ConciseBodyContainsUseStrict of ConciseBody is true
+        // and IsSimpleParameterList of ArrowParameters is false.
+        if body.strict() && !parameters.is_simple() {
+            return Err(Error::lex(LexError::Syntax(
+                "Illegal 'use strict' directive in function with non-simple parameter list".into(),
+                position,
+            )));
+        }
+
+        // It is a Syntax Error if any element of the BoundNames of ArrowParameters
+        // also occurs in the LexicallyDeclaredNames of ConciseBody.
+        // https://tc39.es/ecma262/#sec-arrow-function-definitions-static-semantics-early-errors
+        name_in_lexically_declared_names(
+            &bound_names(&parameters),
+            &lexically_declared_names(&body),
+            position,
+            interner,
+        )?;
+
+        let linear_pos_end = body.linear_pos_end();
+        let linear_span = start_linear_span.union(linear_pos_end);
+
+        let body_span_end = body.span().end();
+        Ok(boa_ast::function::ArrowFunction::new(
+            None,
+            parameters,
+            body,
+            linear_span,
+            Span::new(position, body_span_end),
+        )
+        .into())
+    }
+
+    /// Parses the assignment operator after `lhs` and the right-hand side.
+    #[inline(never)]
+    fn parse_assignment<R>(
+        self,
+        mut lhs: Expression,
+        cursor: &mut Cursor<R>,
+        interner: &mut Interner,
+    ) -> ParseResult<Expression>
+    where
+        R: ReadChar,
+    {
         // Review if we are trying to assign to an invalid left hand side expression.
         if let Some(tok) = cursor.peek(0, interner)?.cloned() {
             match tok.kind() {

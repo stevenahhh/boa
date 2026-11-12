@@ -570,6 +570,10 @@ pub struct ByteCompiler<'ctx> {
 
     #[cfg(feature = "annex-b")]
     pub(crate) annex_b_function_names: Vec<Sym>,
+
+    /// The lowest native stack address compiling may reach; see
+    /// [`crate::vm::compile_stack_floor`].
+    stack_floor: usize,
 }
 
 pub(crate) enum BindingKind {
@@ -692,7 +696,19 @@ impl<'ctx> ByteCompiler<'ctx> {
             global_lexs: Vec::new(),
             global_fns: Vec::new(),
             global_vars: Vec::new(),
+            stack_floor: crate::vm::compile_stack_floor(),
         }
+    }
+
+    /// Returns whether compiling has grown the native stack past its floor, and records it then,
+    /// so that the compilation throws a `RangeError` instead of running the node the caller skips;
+    /// see [`crate::vm::take_compile_stack_overflow`].
+    pub(crate) fn past_stack_floor(&self) -> bool {
+        let past = crate::vm::native_stack_position() < self.stack_floor;
+        if past {
+            crate::vm::note_compile_stack_overflow();
+        }
+        past
     }
 
     pub(crate) fn source_text(&self) -> SourceText {

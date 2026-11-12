@@ -1645,6 +1645,7 @@ impl SourceTextModule {
         let env = source.scope().clone();
 
         let spanned_source_text = SpannedSourceText::new_source_only(source_text.clone());
+        crate::vm::clear_compile_stack_overflow();
         let mut compiler = ByteCompiler::new(
             js_string!("<main>"),
             true,
@@ -1823,6 +1824,7 @@ impl SourceTextModule {
 
             compiler.compile_module_item_list(source.items());
 
+            crate::vm::take_compile_stack_overflow()?;
             (Gc::new(compiler.finish()), functions)
         };
 

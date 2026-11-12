@@ -138,6 +138,7 @@ impl Script {
 
             let spanned_source_text = SpannedSourceText::new_source_only(self.get_source());
 
+            crate::vm::clear_compile_stack_overflow();
             let mut compiler = ByteCompiler::new(
                 js_string!("<main>"),
                 source.strict(),
@@ -159,6 +160,7 @@ impl Script {
 
             compiler.global_declaration_instantiation(source);
             compiler.compile_statement_list(source.statements(), true, false);
+            crate::vm::take_compile_stack_overflow()?;
 
             Gc::new(compiler.finish())
         };

@@ -19,7 +19,7 @@ use crate::{
     source::ReadChar,
 };
 use boa_ast::{
-    Expression, Keyword, Punctuator, Span, Spanned,
+    Expression, Keyword, Position, Punctuator, Span, Spanned,
     expression::{
         access::PropertyAccess,
         operator::{Unary, unary::UnaryOp},
@@ -61,124 +61,74 @@ where
 {
     type Output = FormalParameterListOrExpression;
 
+    #[inline(never)]
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
         cursor.check_stack()?;
         let tok = cursor.peek(0, interner).or_abrupt()?;
         let token_start = tok.span().start();
-        match tok.kind() {
-            TokenKind::Keyword((Keyword::Delete | Keyword::Void | Keyword::TypeOf, true)) => Err(
-                Error::general("Keyword must not contain escaped characters", token_start),
-            ),
-            TokenKind::Keyword((Keyword::Delete, false)) => {
-                cursor.advance(interner);
-                let position = cursor.peek(0, interner).or_abrupt()?.span().start();
-                let target = self.parse(cursor, interner)?.try_into_expression()?;
-
-                match target.flatten() {
-                    Expression::Identifier(_) if cursor.strict() => {
-                        return Err(Error::lex(LexError::Syntax(
-                            "cannot delete variables in strict mode".into(),
-                            token_start,
-                        )));
-                    }
-                    Expression::PropertyAccess(PropertyAccess::Private(_)) => {
-                        return Err(Error::lex(LexError::Syntax(
-                            "cannot delete private fields".into(),
-                            position,
-                        )));
-                    }
-                    _ => {}
-                }
-
-                let target_span_end = target.span().end();
-                Ok(Unary::new(
-                    UnaryOp::Delete,
-                    target,
-                    Span::new(token_start, target_span_end),
-                )
-                .into())
+        let op = match tok.kind() {
+            TokenKind::Keyword((Keyword::Delete | Keyword::Void | Keyword::TypeOf, true)) => {
+                return Err(Error::general(
+                    "Keyword must not contain escaped characters",
+                    token_start,
+                ));
             }
-            TokenKind::Keyword((Keyword::Void, false)) => {
-                cursor.advance(interner);
-                let target = self.parse(cursor, interner)?.try_into_expression()?;
-                let target_span_end = target.span().end();
-                Ok(Unary::new(
-                    UnaryOp::Void,
-                    target,
-                    Span::new(token_start, target_span_end),
-                )
-                .into())
-            }
-            TokenKind::Keyword((Keyword::TypeOf, false)) => {
-                cursor.advance(interner);
-
-                let target = self.parse(cursor, interner)?.try_into_expression()?;
-                let target_span_end = target.span().end();
-                Ok(Unary::new(
-                    UnaryOp::TypeOf,
-                    target,
-                    Span::new(token_start, target_span_end),
-                )
-                .into())
-            }
-            TokenKind::Punctuator(Punctuator::Add) => {
-                cursor.advance(interner);
-
-                let target = self.parse(cursor, interner)?.try_into_expression()?;
-                let target_span_end = target.span().end();
-                Ok(Unary::new(
-                    UnaryOp::Plus,
-                    target,
-                    Span::new(token_start, target_span_end),
-                )
-                .into())
-            }
-            TokenKind::Punctuator(Punctuator::Sub) => {
-                cursor.advance(interner);
-
-                let target = self.parse(cursor, interner)?.try_into_expression()?;
-                let target_span_end = target.span().end();
-                Ok(Unary::new(
-                    UnaryOp::Minus,
-                    target,
-                    Span::new(token_start, target_span_end),
-                )
-                .into())
-            }
-            TokenKind::Punctuator(Punctuator::Neg) => {
-                cursor.advance(interner);
-
-                let target = self.parse(cursor, interner)?.try_into_expression()?;
-                let target_span_end = target.span().end();
-                Ok(Unary::new(
-                    UnaryOp::Tilde,
-                    target,
-                    Span::new(token_start, target_span_end),
-                )
-                .into())
-            }
-            TokenKind::Punctuator(Punctuator::Not) => {
-                cursor.advance(interner);
-
-                let target = self.parse(cursor, interner)?.try_into_expression()?;
-                let target_span_end = target.span().end();
-                Ok(Unary::new(
-                    UnaryOp::Not,
-                    target,
-                    Span::new(token_start, target_span_end),
-                )
-                .into())
-            }
+            TokenKind::Keyword((Keyword::Delete, false)) => UnaryOp::Delete,
+            TokenKind::Keyword((Keyword::Void, false)) => UnaryOp::Void,
+            TokenKind::Keyword((Keyword::TypeOf, false)) => UnaryOp::TypeOf,
+            TokenKind::Punctuator(Punctuator::Add) => UnaryOp::Plus,
+            TokenKind::Punctuator(Punctuator::Sub) => UnaryOp::Minus,
+            TokenKind::Punctuator(Punctuator::Neg) => UnaryOp::Tilde,
+            TokenKind::Punctuator(Punctuator::Not) => UnaryOp::Not,
             TokenKind::Keyword((Keyword::Await, true)) if self.allow_await.0 => {
-                Err(Error::general(
+                return Err(Error::general(
                     "Keyword 'await' must not contain escaped characters",
                     token_start,
-                ))
+                ));
             }
             TokenKind::Keyword((Keyword::Await, false)) if self.allow_await.0 => {
-                Ok((AwaitExpression::new(self.allow_yield).parse(cursor, interner)?).into())
+                return Ok(
+                    (AwaitExpression::new(self.allow_yield).parse(cursor, interner)?).into(),
+                );
             }
-            _ => UpdateExpression::new(self.allow_yield, self.allow_await).parse(cursor, interner),
+            _ => {
+                return UpdateExpression::new(self.allow_yield, self.allow_await)
+                    .parse(cursor, interner);
+            }
+        };
+        cursor.advance(interner);
+
+        // Every operator shares this one recursive call, so a level of nesting takes one frame.
+        let target_start = if op == UnaryOp::Delete {
+            Some(cursor.peek(0, interner).or_abrupt()?.span().start())
+        } else {
+            None
+        };
+        let target = self.parse(cursor, interner)?.try_into_expression()?;
+        if let Some(target_start) = target_start {
+            check_delete_target(&target, token_start, target_start, cursor.strict())?;
         }
+
+        let target_span_end = target.span().end();
+        Ok(Unary::new(op, target, Span::new(token_start, target_span_end)).into())
+    }
+}
+
+/// The early errors of `delete` with the operand `target`.
+fn check_delete_target(
+    target: &Expression,
+    delete_start: Position,
+    target_start: Position,
+    strict: bool,
+) -> ParseResult<()> {
+    match target.flatten() {
+        Expression::Identifier(_) if strict => Err(Error::lex(LexError::Syntax(
+            "cannot delete variables in strict mode".into(),
+            delete_start,
+        ))),
+        Expression::PropertyAccess(PropertyAccess::Private(_)) => Err(Error::lex(
+            LexError::Syntax("cannot delete private fields".into(), target_start),
+        )),
+        _ => Ok(()),
     }
 }
