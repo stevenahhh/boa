@@ -309,9 +309,15 @@ pub enum RuntimeLimitError {
     #[error("reached the maximum number of iteration loops on this execution")]
     LoopIteration,
     /// Error for reaching the maximum amount of recursive calls.
+    ///
+    /// The engine no longer throws it: exceeding the recursion limit throws a `RangeError`,
+    /// which JavaScript code can catch.
     #[error("reached the maximum number of recursive calls on this execution")]
     Recursion,
     /// Error for reaching the maximum stack size
+    ///
+    /// The engine no longer throws it: exceeding the stack size limit throws a `RangeError`,
+    /// which JavaScript code can catch.
     #[error("reached the maximum stack size on this execution")]
     StackSize,
 }

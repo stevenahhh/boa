@@ -12,6 +12,9 @@ pub struct RuntimeLimits {
 
     /// Max function recursion limit
     recursion: usize,
+
+    /// Max bytes of native stack used by nested runs of the interpreter.
+    native_stack: usize,
 }
 
 impl Default for RuntimeLimits {
@@ -22,6 +25,7 @@ impl Default for RuntimeLimits {
             recursion: 512,
             backtrace_limit: 50,
             stack_size: 1024 * 10,
+            native_stack: 1024 * 1024,
         }
     }
 }
@@ -77,6 +81,8 @@ impl RuntimeLimits {
     }
 
     /// Set max stack size before an error is thrown.
+    ///
+    /// The error is a `RangeError`, which JavaScript code can catch.
     #[inline]
     pub fn set_stack_size_limit(&mut self, value: usize) {
         self.stack_size = value;
@@ -90,8 +96,31 @@ impl RuntimeLimits {
     }
 
     /// Set recursion limit before an error is thrown.
+    ///
+    /// The error is a `RangeError`, which JavaScript code can catch.
     #[inline]
     pub fn set_recursion_limit(&mut self, value: usize) {
         self.recursion = value;
+    }
+
+    /// Get the native stack limit, in bytes.
+    ///
+    /// Native code that calls JavaScript, such as an accessor, a callback given to a builtin or a
+    /// proxy trap, runs it in a nested run of the interpreter on the native stack, which the
+    /// recursion limit does not bound by itself. A call throws a `RangeError` when the native
+    /// stack used since the outermost run of the interpreter began exceeds this limit.
+    ///
+    /// Default is `1024 * 1024` bytes, half the stack of a thread spawned by the Rust standard
+    /// library.
+    #[inline]
+    #[must_use]
+    pub const fn native_stack_limit(&self) -> usize {
+        self.native_stack
+    }
+
+    /// Set the native stack limit, in bytes; see [`RuntimeLimits::native_stack_limit`].
+    #[inline]
+    pub fn set_native_stack_limit(&mut self, value: usize) {
+        self.native_stack = value;
     }
 }

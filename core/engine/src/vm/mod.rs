@@ -8,7 +8,6 @@ use crate::{
     Context, JsError, JsExpect, JsNativeError, JsObject, JsResult, JsString, JsValue, Module,
     builtins::promise::{PromiseCapability, ResolvingFunctions},
     environments::EnvironmentStack,
-    error::RuntimeLimitError,
     object::JsFunction,
     realm::Realm,
     script::Script,
@@ -93,6 +92,10 @@ pub struct Vm {
     /// [`JsObject::call`](crate::object::JsObject::call) and
     /// [`JsObject::construct`](crate::object::JsObject::construct).
     pub(crate) host_call_depth: usize,
+
+    /// An address on the native stack where the outermost `Context::run` began, or `0` while no
+    /// run is active; the native stack limit counts the native stack used below it.
+    pub(crate) native_stack_start: usize,
 
     pub(crate) shadow_stack: ShadowStack,
 
@@ -420,6 +423,7 @@ impl Vm {
             runtime_limits: RuntimeLimits::default(),
             native_active_function: None,
             host_call_depth: 0,
+            native_stack_start: 0,
             shadow_stack: ShadowStack::default(),
             #[cfg(feature = "trace")]
             trace: false,
@@ -986,6 +990,17 @@ impl Context {
     }
 
     pub(crate) fn run(&mut self) -> CompletionRecord {
+        // The native stack limit counts the native stack used since the outermost run began.
+        if self.vm.native_stack_start != 0 {
+            return self.run_frames();
+        }
+        self.vm.native_stack_start = native_stack_position();
+        let record = self.run_frames();
+        self.vm.native_stack_start = 0;
+        record
+    }
+
+    fn run_frames(&mut self) -> CompletionRecord {
         while let Some(byte) = self
             .vm
             .frame()
@@ -1014,23 +1029,49 @@ impl Context {
     }
 
     /// Checks if we haven't exceeded the defined runtime limits.
+    ///
+    /// A call that would exceed the recursion limit, the stack size limit or the native stack
+    /// limit throws a `RangeError`, as a stack overflow does in browsers, and JavaScript code can
+    /// catch it. The limits still hold after a catch: this check runs before every call, the
+    /// calls of `catch` and `finally` blocks included, and a handler only runs once the frames
+    /// and nested runs above it have returned, so it is never deeper than the call that threw.
     pub(crate) fn check_runtime_limits(&self) -> JsResult<()> {
-        // Must throw if the number of recursive calls exceeds the defined limit.
-        //
         // `host_call_depth` accounts for nested host calls that re-enter the VM by invoking
         // `Context::run()` recursively (for example, accessor calls).
         // Subtract 1 to exclude the dummy frame at index 0.
         let recursion_depth = (self.vm.frames.len() - 1).saturating_add(self.vm.host_call_depth);
-        if self.vm.runtime_limits.recursion_limit() <= recursion_depth {
-            return Err(RuntimeLimitError::Recursion.into());
-        }
-        // Must throw if the stack size exceeds the defined maximum length.
-        if self.vm.runtime_limits.stack_size_limit() <= self.vm.stack.stack.len() {
-            return Err(RuntimeLimitError::StackSize.into());
+        // Each nested run of the interpreter takes native stack, which can run out before the
+        // recursion limit is reached. This assumes a stack that grows downwards; on one that
+        // grows upwards the used size reads as zero.
+        let native_stack_used = self
+            .vm
+            .native_stack_start
+            .saturating_sub(native_stack_position());
+        if self.vm.runtime_limits.recursion_limit() <= recursion_depth
+            || self.vm.runtime_limits.stack_size_limit() <= self.vm.stack.stack.len()
+            || self.vm.runtime_limits.native_stack_limit() < native_stack_used
+        {
+            return Err(stack_overflow());
         }
 
         Ok(())
     }
+}
+
+/// Returns an address on the native stack at its current end.
+#[inline]
+fn native_stack_position() -> usize {
+    let marker = 0u8;
+    std::hint::black_box(std::ptr::from_ref(&marker)).addr()
+}
+
+/// The error of a call that exceeds the recursion, stack size or native stack limit.
+#[cold]
+#[inline(never)]
+fn stack_overflow() -> JsError {
+    JsNativeError::range()
+        .with_message("Maximum call stack size exceeded")
+        .into()
 }
 
 /// Yields once to the executor.
