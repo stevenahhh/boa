@@ -109,7 +109,7 @@ pub(crate) fn global_declaration_instantiation_context(
         };
 
         // i. For each String vn of the BoundNames of d, do
-        for name in bound_names(&declaration) {
+        for name in bound_names(declaration) {
             // 1. If declaredFunctionNames does not contain vn, then
             if !declared_function_names.contains(&name) {
                 // SKIP: a. Let vnDefinable be ? env.CanDeclareGlobalVar(vn).
@@ -449,7 +449,7 @@ impl ByteCompiler<'_> {
             };
 
             // i. For each String vn of the BoundNames of d, do
-            for name in bound_names(&declaration) {
+            for name in bound_names(declaration) {
                 // 1. If declaredFunctionNames does not contain vn, then
                 if !declared_function_names.contains(&name) {
                     // a. Let vnDefinable be ? env.CanDeclareGlobalVar(vn).
@@ -725,7 +725,7 @@ impl ByteCompiler<'_> {
             };
 
             // a.i. For each String vn of the BoundNames of d, do
-            for name in bound_names(&declaration) {
+            for name in bound_names(declaration) {
                 // 1. If declaredFunctionNames does not contain vn, then
                 if !declared_function_names.contains(&name) {
                     // a. If varEnv is a Global Environment Record, then
@@ -935,13 +935,13 @@ impl ByteCompiler<'_> {
             // a.i. Assert: d is either a FunctionDeclaration, a GeneratorDeclaration, an AsyncFunctionDeclaration, or an AsyncGeneratorDeclaration.
             // a.ii. Let fn be the sole element of the BoundNames of d.
             let (name, function) = match declaration {
-                VarScopedDeclaration::FunctionDeclaration(f) => (f.name(), FunctionSpec::from(f)),
-                VarScopedDeclaration::GeneratorDeclaration(f) => (f.name(), FunctionSpec::from(f)),
+                VarScopedDeclaration::FunctionDeclaration(f) => (f.name(), FunctionSpec::from(*f)),
+                VarScopedDeclaration::GeneratorDeclaration(f) => (f.name(), FunctionSpec::from(*f)),
                 VarScopedDeclaration::AsyncFunctionDeclaration(f) => {
-                    (f.name(), FunctionSpec::from(f))
+                    (f.name(), FunctionSpec::from(*f))
                 }
                 VarScopedDeclaration::AsyncGeneratorDeclaration(f) => {
-                    (f.name(), FunctionSpec::from(f))
+                    (f.name(), FunctionSpec::from(*f))
                 }
                 VarScopedDeclaration::VariableDeclaration(_) => continue,
             };
