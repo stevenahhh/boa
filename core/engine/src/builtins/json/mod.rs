@@ -50,6 +50,7 @@ const fn to_hex_digit(val: u16) -> u16 {
     }
 }
 
+mod direct;
 #[cfg(test)]
 mod tests;
 
@@ -244,6 +245,14 @@ impl Json {
             .to_string(context)?
             .to_std_string()
             .map_err(|e| JsNativeError::syntax().with_message(e.to_string()))?;
+
+        // Without a reviver, most texts can be turned into their value directly; the steps below
+        // handle the rest, including every text that is not valid JSON.
+        if !args.get_or_undefined(1).is_callable()
+            && let Some(value) = direct::parse(&json_string, context)
+        {
+            return Ok(value);
+        }
 
         // 2. Parse ! StringToCodePoints(jsonString) as a JSON text as specified in ECMA-404.
         //    Throw a SyntaxError exception if it is not a valid JSON text as defined in that specification.
