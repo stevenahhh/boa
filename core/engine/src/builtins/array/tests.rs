@@ -935,6 +935,30 @@ fn array_length_is_not_enumerable() {
 }
 
 #[test]
+fn array_sort_with_inconsistent_comparator() {
+    run_test_actions([
+        TestAction::run_harness(),
+        // A comparator that is not a consistent order must still end with every
+        // element present exactly once.
+        TestAction::run(indoc! {r#"
+                let shuffled = [];
+                for (let i = 0; i < 300; i++) shuffled.push(i);
+                let k = 0;
+                shuffled.sort(() => { k = (k * 7 + 3) % 11; return k - 5; });
+                let seen = shuffled.slice().sort((a, b) => a - b);
+            "#}),
+        TestAction::assert("seen.length === 300 && seen.every((v, i) => v === i)"),
+        // Equal elements keep their original order.
+        TestAction::assert(indoc! {r#"
+                arrayEquals(
+                    [[1, "a"], [0, "b"], [1, "c"], [0, "d"], [1, "e"]].sort((x, y) => x[0] - y[0]).map(p => p[1]),
+                    ["b", "d", "a", "c", "e"]
+                )
+            "#}),
+    ]);
+}
+
+#[test]
 fn array_sort() {
     run_test_actions([
         TestAction::run_harness(),

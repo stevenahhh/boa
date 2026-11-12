@@ -2667,18 +2667,55 @@ impl Array {
             // e. Set k to k + 1.
         }
         // 4. Sort items using an implementation-defined sequence of calls to SortCompare. If any such call returns an abrupt completion, stop before performing any further calls to SortCompare and return that Completion Record.
+        //
+        // A script may pass a comparator that is not a consistent order, for example
+        // `() => Math.random() - 0.5` to shuffle. The standard library's sorts may
+        // panic on such a comparator, so a plain stable merge sort over indices is used:
+        // it finishes for any comparator, and for a consistent one it gives the same
+        // result as any other stable sort.
+        let len = items.len();
+        let mut order: Vec<usize> = (0..len).collect();
+        let mut merged = order.clone();
         let mut sort_err = Ok(());
-        items.sort_by(|x, y| {
-            if sort_err.is_ok() {
-                sort_compare(x, y, context).unwrap_or_else(|err| {
-                    sort_err = Err(err);
-                    Ordering::Equal
-                })
-            } else {
-                Ordering::Equal
+        let mut width = 1;
+        while width < len && sort_err.is_ok() {
+            for start in (0..len).step_by(2 * width) {
+                let mid = (start + width).min(len);
+                let end = (start + 2 * width).min(len);
+                let (mut left, mut right, mut out) = (start, mid, start);
+                while left < mid && right < end {
+                    // The right item moves ahead only when it sorts strictly first,
+                    // which keeps equal items in their original order.
+                    let right_first = sort_err.is_ok()
+                        && match sort_compare(&items[order[right]], &items[order[left]], context) {
+                            Ok(ordering) => ordering == Ordering::Less,
+                            Err(err) => {
+                                sort_err = Err(err);
+                                false
+                            }
+                        };
+                    if right_first {
+                        merged[out] = order[right];
+                        right += 1;
+                    } else {
+                        merged[out] = order[left];
+                        left += 1;
+                    }
+                    out += 1;
+                }
+                merged[out..out + (mid - left)].copy_from_slice(&order[left..mid]);
+                out += mid - left;
+                merged[out..end].copy_from_slice(&order[right..end]);
             }
-        });
+            std::mem::swap(&mut order, &mut merged);
+            width *= 2;
+        }
         sort_err?;
+        let mut slots: Vec<Option<JsValue>> = items.into_iter().map(Some).collect();
+        let items = order
+            .into_iter()
+            .filter_map(|index| slots[index].take())
+            .collect();
 
         // 5. Return items.
         Ok(items)
